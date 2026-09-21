@@ -1,9 +1,8 @@
 import { Router } from "express";
 import multer from "multer";
-import path from "node:path";
-import fs from "node:fs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { uploadPhoto } from "../lib/cloudinary.js";
 import { distanceMeters } from "../lib/geo.js";
 import { isLateCheckIn, resolveShift } from "../lib/time.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -11,20 +10,10 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 const router = Router();
 router.use(requireAuth);
 
-const uploadDir = process.env.UPLOAD_DIR || "./uploads";
-fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname) || ".jpg";
-    cb(null, `${req.user.sub}-${Date.now()}${ext}`);
-  },
-});
-
+// Vercel functions cap request bodies at ~4.5MB, so keep the limit below that.
 const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
       return cb(new Error("Only image uploads are allowed"));
@@ -84,7 +73,7 @@ router.post("/check-in", upload.single("photo"), async (req, res) => {
     checkInLat: lat,
     checkInLng: lng,
     checkInDistanceM: distanceM,
-    checkInPhotoUrl: `/uploads/${req.file.filename}`,
+    checkInPhotoUrl: await uploadPhoto(req.file.buffer, employee.employeeCode, "in"),
     checkInStatus: status,
     checkInLate: late,
     note,
@@ -109,7 +98,10 @@ router.post("/check-out", upload.single("photo"), async (req, res) => {
   }
 
   const { siteId, lat, lng, note, isOffSite } = parsed.data;
-  const site = await prisma.site.findUnique({ where: { id: siteId } });
+  const [site, employee] = await Promise.all([
+    prisma.site.findUnique({ where: { id: siteId } }),
+    prisma.employee.findUnique({ where: { id: req.user.sub }, select: { employeeCode: true } }),
+  ]);
   if (!site) {
     return res.status(404).json({ error: "Site not found" });
   }
@@ -136,7 +128,7 @@ router.post("/check-out", upload.single("photo"), async (req, res) => {
       checkOutLat: lat,
       checkOutLng: lng,
       checkOutDistanceM: distanceM,
-      checkOutPhotoUrl: `/uploads/${req.file.filename}`,
+      checkOutPhotoUrl: await uploadPhoto(req.file.buffer, employee.employeeCode, "out"),
       checkOutStatus: status,
       note: note ?? existing.note,
     },

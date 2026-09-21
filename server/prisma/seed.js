@@ -6,6 +6,11 @@ const prisma = new PrismaClient();
 
 async function main() {
   const passwordHash = await bcrypt.hash("password123", 10);
+  // Admin code/name/password come from .env (ADMIN_CODE, ADMIN_NAME, ADMIN_PASSWORD); fall back to the demo password for local dev.
+  const adminCode = process.env.ADMIN_CODE || "ADMIN001";
+  const adminName = process.env.ADMIN_NAME || "Admin User";
+  const adminPassword = process.env.ADMIN_PASSWORD || "password123";
+  const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
 
   const office = await prisma.site.upsert({
     where: { id: 1 },
@@ -48,13 +53,13 @@ async function main() {
   });
 
   const admin = await prisma.employee.upsert({
-    where: { employeeCode: "ADMIN001" },
-    update: { departmentId: hrDept.id },
+    where: { employeeCode: adminCode },
+    update: { name: adminName, departmentId: hrDept.id, passwordHash: adminPasswordHash },
     create: {
-      employeeCode: "ADMIN001",
-      name: "Admin User",
+      employeeCode: adminCode,
+      name: adminName,
       email: "admin@example.com",
-      passwordHash,
+      passwordHash: adminPasswordHash,
       role: "ADMIN",
       departmentId: hrDept.id,
       sites: { create: { siteId: office.id, isDefault: true } },
@@ -87,7 +92,7 @@ async function main() {
   });
 
   console.log({ office, departments: [hrDept.name, salesDept.name], admin: admin.employeeCode, employee: employee.employeeCode });
-  console.log("Seed complete. Login with password: password123");
+  console.log(process.env.ADMIN_PASSWORD ? "Seed complete. Admin password taken from ADMIN_PASSWORD; other demo users use password123." : "Seed complete. Login with password: password123");
 }
 
 main()
