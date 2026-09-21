@@ -8,7 +8,9 @@ import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 
-dotenv.config({ path: ".env.production" });
+// override: Prisma auto-loads server/.env (staging) on import, which must not win over production.
+dotenv.config({ path: ".env.production", override: true });
+console.log("Target DB host:", new URL(process.env.DATABASE_URL).host);
 
 const prisma = new PrismaClient();
 
