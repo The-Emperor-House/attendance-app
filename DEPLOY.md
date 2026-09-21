@@ -1,91 +1,144 @@
-# Deploy: Vercel + Railway (production / staging)
+# Deploy: Vercel + Railway + Cloudinary (production / staging)
 
-| | Git branch | Vercel | Railway DB | Cloudinary folder |
-|---|---|---|---|---|
-| Production | `main` | Production deployment | environment `production` | `attendance/production/<employeeCode>/` |
-| Staging | `dev` | Preview deployment of `dev` | environment `staging` | `attendance/dev/<employeeCode>/` |
+This describes how the project is actually set up. No secrets live in this file.
 
-Workflow: work on `dev` -> test on staging -> merge `dev` into `main` -> production.
+## Overview
 
-## 1. Railway (MySQL, one per environment)
+| | Production | Staging |
+|---|---|---|
+| Git branch | `main` | `dev` |
+| Web (Vercel project `attendance-app`, root `web`) | `https://attendance-app-wine-seven.vercel.app` | `https://attendance-app-git-dev-emperor-houses-projects.vercel.app` |
+| API (Vercel project `attendance-api`, root `server`) | `https://attendance-app-zeta-taupe.vercel.app` | `https://attendance-api-git-dev-emperor-houses-projects.vercel.app` |
+| Database | Railway MySQL (production) | Railway MySQL (staging), has demo data |
+| Photos (Cloudinary) | `attendance/production/<employeeCode>/` | `attendance/dev/<employeeCode>/` |
 
-1. railway.com -> **New Project** -> **Deploy MySQL**. The default environment is `production`.
-2. Top bar -> environment dropdown -> **New Environment** -> name it `staging`
-   (choose "Duplicate environment: production" so it also gets its own MySQL service).
-3. In each environment: MySQL service -> **Variables** -> copy `MYSQL_PUBLIC_URL`
-   (looks like `mysql://root:<pw>@<host>.proxy.rlwy.net:<port>/railway`).
-   Use the **public** URL: Vercel runs outside Railway's private network.
-4. Append `?connection_limit=5` to it. This becomes `DATABASE_URL` for that environment.
-   Serverless functions open many short-lived connections, so cap them.
+- Vercel team `emperor-houses-projects`, **Hobby** plan. Hobby cannot deploy private repos owned by a
+  GitHub organization, so the repo `The-Emperor-House/attendance-app` is **public**.
+- Staging URLs are the automatic per-branch aliases (`<project>-git-dev-<team>.vercel.app`), stable across
+  deployments. No custom domain is needed.
+- Workflow: work on `dev` -> test on staging -> merge `dev` into `main` -> Vercel deploys production.
 
-## 2. Run migrations (from your machine, once per database)
+## Local env files (in `server/`, all git-ignored)
 
-PowerShell, inside `server/`:
+| File | Points at | Used by |
+|---|---|---|
+| `.env` | Railway **staging** DB (local docker URL kept as a comment) | `npm run dev`, `seed.js`, `seed-demo.js` |
+| `.env.production` | Railway **production** DB | `npm run seed:prod` only |
+| `.env.example` | placeholders | committed as a template |
+
+Vercel does **not** read these files; copy values into Vercel's Environment Variables by hand.
+
+## Environment variables on Vercel
+
+Scope Production = `main`, scope Preview = `dev`.
+
+### `attendance-api`
+
+| Variable | Production | Preview |
+|---|---|---|
+| `DATABASE_URL` | production Railway public URL (`?connection_limit=5`) | staging Railway public URL (`?connection_limit=5`) |
+| `JWT_SECRET` | random string A | a different random string B |
+| `CORS_ORIGIN` | production web URL | staging web URL |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | same Cloudinary account | same Cloudinary account |
+
+- `CORS_ORIGIN` must match the web URL exactly (`https://...`, no trailing slash, not a placeholder).
+- `APP_ENV` is optional. Photo folder is `production` on a Vercel Production deployment and `dev`
+  everywhere else; set `APP_ENV` only to force it.
+- `ADMIN_CODE`, `ADMIN_NAME`, `ADMIN_PASSWORD` are only for the seed scripts on your machine.
+  The API does not use them, so do **not** keep them on Vercel.
+- Use the **Public** Railway URL (`*.proxy.rlwy.net`), not `*.railway.internal`: Vercel is outside Railway's network.
+
+### `attendance-app` (web)
+
+| Variable | Scope | Value |
+|---|---|---|
+| `NUXT_PUBLIC_API_BASE` | Production only | production API URL |
+| `NUXT_PUBLIC_API_BASE` | Preview only | staging API URL |
+
+This value is baked in at build time: redeploy the web project after changing it.
+
+## Vercel project settings
+
+- Both projects: Git -> Production Branch = `main`.
+- **Deployment Protection -> Vercel Authentication must be off for Preview** on *both* projects
+  (or "Only Production Deployments"). Hobby turns it on by default; with it on, staging URLs answer
+  `302` to a Vercel login page and the staging web app cannot call the staging API.
+  Changing this is a security setting, so it is done by hand in the dashboard.
+
+## Database (Railway)
+
+Two separate MySQL databases (production, staging). For each: MySQL service -> Variables -> copy
+`MYSQL_PUBLIC_URL`, append `?connection_limit=5`, use it as that environment's `DATABASE_URL`.
+
+### Migrations
+
+Run from `server/`, once per database, and again after every schema change (staging first, then production,
+**before** merging to `main`). Use `migrate deploy`, never `migrate dev`, against Railway.
 
 ```powershell
-$env:DATABASE_URL = "<staging DATABASE_URL>"
-npx prisma migrate deploy      # applies every migration in prisma/migrations
-node prisma/seed.js            # first time only: creates the admin user etc.
-node prisma/seed-demo.js       # staging only: demo data. Never on production.
+$env:DATABASE_URL = "<that database's public URL>"
+npx prisma migrate deploy
 ```
 
-Repeat with the production URL (without `seed-demo`).
-Use `migrate deploy`, never `migrate dev`, against Railway.
-After every future schema change: commit the migration, then run `migrate deploy` against
-staging first, then production (before merging to `main`).
+> Prisma auto-loads `server/.env` (staging). Always set `DATABASE_URL` explicitly for the target
+> database, and double-check the host printed in the output.
 
-## 3. Vercel: two projects from the same repo
+### Seeding
 
-Import `The-Emperor-House/attendance-app` twice (Add New -> Project):
-
-| Project | Root Directory | Framework |
+| Database | Command | What it does |
 |---|---|---|
-| `attendance-api` | `server` | Other |
-| `attendance-web` | `web` | Nuxt (auto-detected) |
+| Staging | `node prisma/seed.js` then `node prisma/seed-demo.js` | reference data, demo users (`password123`), 40 demo employees, 90 days of history |
+| Production | `npm run seed:prod` | reference data (leave categories/quotas) + **one admin** only, no demo data |
 
-For both: Settings -> Git -> **Production Branch = `main`**.
-Every push to `dev` then builds a Preview deployment.
+- `seed.js` reads `ADMIN_CODE`, `ADMIN_NAME`, `ADMIN_PASSWORD` from `.env`; other demo users still use `password123`.
+- `seed:prod` reads `.env.production` (forces it over `.env`), requires `ADMIN_PASSWORD` of 10+ characters,
+  prints `Target DB host: ...` before writing, and never resets an existing admin's password.
+  Remove `ADMIN_PASSWORD` from `.env.production` afterwards if you do not need it.
+- **Login uses the employee code** (`ADMIN_CODE`), not the display name (`ADMIN_NAME`).
+- Demo attendance rows point to `/uploads/seed-placeholder.jpg`, which does not exist (photos are on
+  Cloudinary now), so those photos will not render on staging.
 
-Give `dev` a stable URL: Settings -> Domains -> add e.g. `attendance-api-dev.vercel.app`
-and assign it to Git branch `dev`. Same for web (`attendance-web-dev.vercel.app`).
-Without this, preview URLs change on every deployment.
+## Photos (Cloudinary)
 
-## 4. Environment variables (Settings -> Environment Variables)
+Check-in/out photos are uploaded by the API to Cloudinary and the database stores the full
+`https://res.cloudinary.com/...` URL. Path: `attendance/<production|dev>/<employeeCode>/<date>-<in|out>-<timestamp>`.
+Requests are limited to 4MB (Vercel caps request bodies at ~4.5MB).
 
-For each variable, choose the environment scope: **Production** = `main`,
-**Preview** (branch `dev`) = staging.
+Staging and production share one Cloudinary account and are separated by folder.
+Deleting photos from Cloudinary breaks the matching rows' images.
 
-### attendance-api
+## Admins
 
-| Variable | Production | Preview (dev) |
-|---|---|---|
-| `DATABASE_URL` | production Railway URL | staging Railway URL |
-| `JWT_SECRET` | long random string A | a different long random string B |
-| `CORS_ORIGIN` | production web URL | staging web URL (`https://attendance-web-dev.vercel.app`) |
-| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | same | same |
+Admins are managed in the app (Admin -> employees, role "ผู้ดูแลระบบ"). The API refuses to demote,
+deactivate or resign the **last active admin** (HTTP 409), so the system cannot lock itself out.
 
-`APP_ENV` is not needed: the photo folder is `production` on Vercel Production and `dev` elsewhere.
-Generate a secret: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+## Deploying
 
-### attendance-web
+1. Commit and push to `dev`. Vercel builds Preview for both projects (staging).
+2. Test on staging.
+3. If the schema changed, run `prisma migrate deploy` against production.
+4. Merge `dev` into `main` and push. Vercel builds Production. There is no auto-merge on purpose.
 
-| Variable | Production | Preview (dev) |
-|---|---|---|
-| `NUXT_PUBLIC_API_BASE` | production API URL | staging API URL |
-
-`NUXT_PUBLIC_API_BASE` is baked in at build time, so redeploy the web project after changing it.
-
-## 5. Verify
-
-1. `https://<api>/health` returns `{"ok":true}`.
-2. Log in on the web app, check in with a photo, and confirm the image appears in Cloudinary under
-   `attendance/dev/<employeeCode>/` (staging) or `attendance/production/...` (production).
-3. Confirm staging and production have different data (they use different databases).
+**Env var changes only affect new deployments.** To rebuild staging after editing Preview variables,
+push a new commit to `dev` (an empty commit works: `git commit --allow-empty -m "rebuild"`).
+Vercel's "Redeploy" button on a Production deployment does *not* rebuild `dev`, even if you pick
+the Preview target: it redeploys the `main` code.
 
 ## Troubleshooting
 
-- **CORS error in browser**: `CORS_ORIGIN` on the API must exactly match the web URL (no trailing slash). Redeploy the API.
-- **`Prisma Client could not locate the Query Engine` on Vercel**: add
-  `binaryTargets = ["native", "rhel-openssl-3.0.x"]` to `generator client` in `schema.prisma`.
-- **Photo upload 413**: Vercel caps request bodies at ~4.5MB; the API already limits photos to 4MB.
-- **`Too many connections`**: lower `connection_limit` in `DATABASE_URL`.
+| Symptom | Cause / fix |
+|---|---|
+| Browser CORS error; `Access-Control-Allow-Origin` shows `localhost` or a `<placeholder>` | `CORS_ORIGIN` on the API is wrong for that scope. Fix, then rebuild the API. |
+| Login button does nothing / requests go to `localhost:4000` | `NUXT_PUBLIC_API_BASE` missing or web not rebuilt. |
+| Staging web opens a Vercel login page (`302` to `vercel.com/sso-api`) | Vercel Authentication is still on for Preview. |
+| `401 Invalid credentials` | Wrong employee code/password, or the API points at a different database than you seeded. |
+| `Invalid Signature` on photo upload | `CLOUDINARY_API_KEY` and `CLOUDINARY_API_SECRET` belong to different Cloudinary accounts. Check both in the same scope. |
+| `Prisma Client could not locate the Query Engine` on Vercel | Add `binaryTargets = ["native", "rhel-openssl-3.0.x"]` to `generator client` in `schema.prisma`. |
+| `Too many connections` | Lower `connection_limit` in `DATABASE_URL`. |
+| Photo upload `413` | Photo over ~4MB. |
+
+## Security housekeeping
+
+- Never commit `.env` / `.env.production`. `.gitignore` covers `.env.*` except `.env.example`.
+- Secrets pasted into chats or tickets should be rotated: Railway DB passwords, Cloudinary API secrets, admin password.
+- In Vercel, mark `DATABASE_URL`, `JWT_SECRET` and `CLOUDINARY_*` as **Secret** type (the dashboard flags them "Needs Attention").
