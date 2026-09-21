@@ -48,6 +48,17 @@ const employeeInclude = {
   sites: { include: { site: true } },
 };
 
+// Blocks any change that would leave the system without an active ADMIN
+// (demoting, deactivating or resigning the last one), which would lock everyone out.
+async function isLastActiveAdmin(id) {
+  const target = await prisma.employee.findUnique({ where: { id }, select: { role: true, active: true } });
+  if (!target || target.role !== "ADMIN" || !target.active) return false;
+  const others = await prisma.employee.count({ where: { role: "ADMIN", active: true, id: { not: id } } });
+  return others === 0;
+}
+
+const LAST_ADMIN_ERROR = "ไม่สามารถดำเนินการได้ เพราะเป็นผู้ดูแลระบบคนสุดท้าย ต้องมีผู้ดูแลระบบอย่างน้อย 1 คน";
+
 function omitPassword({ passwordHash, ...rest }) {
   return rest;
 }
@@ -129,6 +140,10 @@ router.put("/:id", async (req, res) => {
     return res.status(400).json({ error: "พนักงานไม่สามารถเป็นหัวหน้าของตัวเองได้" });
   }
 
+  if (data.role && data.role !== "ADMIN" && (await isLastActiveAdmin(employeeId))) {
+    return res.status(409).json({ error: LAST_ADMIN_ERROR });
+  }
+
   const employee = await prisma.employee.update({
     where: { id: employeeId },
     data,
@@ -158,8 +173,12 @@ router.put("/:id", async (req, res) => {
 });
 
 router.delete("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (await isLastActiveAdmin(id)) {
+    return res.status(409).json({ error: LAST_ADMIN_ERROR });
+  }
   await prisma.employee.update({
-    where: { id: Number(req.params.id) },
+    where: { id },
     data: { active: false },
   });
   res.status(204).send();
@@ -176,8 +195,12 @@ router.post("/:id/resign", async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
+  const id = Number(req.params.id);
+  if (await isLastActiveAdmin(id)) {
+    return res.status(409).json({ error: LAST_ADMIN_ERROR });
+  }
   const employee = await prisma.employee.update({
-    where: { id: Number(req.params.id) },
+    where: { id },
     data: {
       active: false,
       resignedAt: new Date(parsed.data.effectiveDate),
