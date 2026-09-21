@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  EMPLOYEE
+  SUPERVISOR
+  ADMIN
+}
+
+enum AttendanceStatus {
+  NORMAL
+  OUT_OF_RANGE
+  OFF_SITE
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ResignationType {
+  RESIGNED
+  TERMINATED
+  RETIRED
+  OTHER
+}
+
+model Site {
+  id        Int      @id @default(autoincrement())
+  name      String
+  address   String?
+  lat       Float
+  lng       Float
+  radiusM   Int      @default(150)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees  EmployeeSite[]
+  attendance DailyAttendance[]
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees Employee[]
+}
+
+model Employee {
+  id           Int      @id @default(autoincrement())
+  employeeCode String   @unique
+  name         String
+  email        String?  @unique
+  passwordHash String
+  role         Role     @default(EMPLOYEE)
+  active       Boolean  @default(true)
+  departmentId Int?
+  supervisorId Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Offboarding — set together when an employee leaves; `active` still gates login.
+  resignedAt        DateTime?        @db.Date
+  resignationType   ResignationType?
+  resignationReason String?          @db.Text
+
+  department       Department?       @relation(fields: [departmentId], references: [id])
+  supervisor       Employee?         @relation("Supervisor", fields: [supervisorId], references: [id])
+  subordinates     Employee[]        @relation("Supervisor")
+  shift            Shift?
+  sites            EmployeeSite[]
+  attendance       DailyAttendance[] @relation("Owner")
+  editedAttendance DailyAttendance[] @relation("EditedBy")
+  leaveRequests    LeaveRequest[]    @relation("LeaveOwner")
+  leavesApproved   LeaveRequest[]    @relation("LeaveApprover")
+  leaveQuotas      LeaveQuota[]
+}
+
+// Personal work schedule — the only source of shift/late calculation, since
+// employees at the same site can work different days/hours (5-day, 6-day, etc.).
+// An employee with no Shift row here is never flagged as late.
+model Shift {
+  id           Int    @id @default(autoincrement())
+  employeeId   Int    @unique
+  startTime    String @db.VarChar(5) // "HH:mm"
+  endTime      String @db.VarChar(5) // "HH:mm"
+  graceMinutes Int    @default(0)
+  workDays     Json // ISO weekday numbers, Monday=1 .. Sunday=7, e.g. [1,2,3,4,5]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model EmployeeSite {
+  employeeId Int
+  siteId     Int
+  isDefault  Boolean @default(false)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  site     Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([employeeId, siteId])
+}
+
+// One row per employee per calendar day: check-in and check-out are paired here.
+// Only one check-in and one check-out are allowed per day; mistakes are corrected
+// by HR/Admin editing this row directly rather than creating new rows.
+model DailyAttendance {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  siteId     Int
+  date       DateTime @db.Date
+
+  checkInAt        DateTime?
+  checkInLat       Float?
+  checkInLng       Float?
+  checkInDistanceM Float?
+  checkInPhotoUrl  String?
+  checkInStatus    AttendanceStatus?
+  checkInLate      Boolean           @default(false)
+
+  checkOutAt        DateTime?
+  checkOutLat       Float?
+  checkOutLng       Float?
+  checkOutDistanceM Float?
+  checkOutPhotoUrl  String?
+  checkOutStatus    AttendanceStatus?
+
+  note String? @db.Text
+
+  editedByHr Boolean   @default(false)
+  editedById Int?
+  editedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee Employee  @relation("Owner", fields: [employeeId], references: [id])
+  site     Site      @relation(fields: [siteId], references: [id])
+  editedBy Employee? @relation("EditedBy", fields: [editedById], references: [id])
+
+  @@unique([employeeId, date])
+  @@index([siteId, date])
+}
+
+// Leave categories are admin-managed (not a fixed enum) so HR can add new
+// types (e.g. "ลาบวช") without a code change. `code` is a stable short slug
+// used as the foreign key everywhere; `active` hides retired categories from
+// new requests without breaking historical records that reference them.
+model LeaveCategory {
+  code      String   @id @db.VarChar(30)
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LeaveRequest {
+  id         Int         @id @default(autoincrement())
+  employeeId Int
+  type       String      @db.VarChar(30)
+  startDate  DateTime    @db.Date
+  endDate    DateTime    @db.Date
+  reason     String?     @db.Text
+  status     LeaveStatus @default(PENDING)
+
+  approvedById  Int?
+  approvedAt    DateTime?
+  approverNote  String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee   Employee  @relation("LeaveOwner", fields: [employeeId], references: [id])
+  approvedBy Employee? @relation("LeaveApprover", fields: [approvedById], references: [id])
+
+  @@index([employeeId, startDate])
+  @@index([status])
+}
+
+// Company-wide non-working days (public holidays, company off days). Purely
+// informational for now — shown to employees and factored into reports.
+model Holiday {
+  id        Int      @id @default(autoincrement())
+  date      DateTime @unique @db.Date
+  name      String
+  createdAt DateTime @default(now())
+}
+
+// Company-wide default annual quota per leave type. Falls back to 0 if a type
+// has no row here.
+model LeaveQuotaDefault {
+  type       String   @id @db.VarChar(30)
+  annualDays Int
+  updatedAt  DateTime @updatedAt
+}
+
+// Per-employee, per-year override of the default quota. Presence of a row
+// here replaces LeaveQuotaDefault for that employee/type/year.
+model LeaveQuota {
+  id         Int    @id @default(autoincrement())
+  employeeId Int
+  type       String @db.VarChar(30)
+  year       Int
+  days       Int
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, type, year])
+}

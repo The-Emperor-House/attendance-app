@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  font-family: 'Prompt', ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background-color: #f7faf6;
+  color: #1f2a1c;
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background-color: #ccdfc3;
+}
