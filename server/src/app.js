@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import path from "node:path";
 import authRoutes from "./routes/auth.js";
 import siteRoutes from "./routes/sites.js";
 import employeeRoutes from "./routes/employees.js";
@@ -17,7 +16,6 @@ export function createApp() {
 
   app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
   app.use(express.json());
-  app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "./uploads")));
 
   app.get("/health", (req, res) => res.json({ ok: true }));
 
