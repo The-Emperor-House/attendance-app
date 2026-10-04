@@ -85,7 +85,10 @@
               <div class="space-y-2 rounded-lg bg-gray-50 p-3">
                 <div>
                   <label class="block text-xs text-gray-500">เวลาเช็คอิน</label>
-                  <input v-model="editForm.checkInAt" type="datetime-local" class="w-full rounded border px-2 py-1 text-sm" />
+                  <div class="flex gap-2">
+                    <input v-model="editForm.checkInDate" type="date" class="flex-1 rounded border px-2 py-1 text-sm" />
+                    <TimeInput v-model="editForm.checkInTime" class="w-20 rounded border px-2 py-1 text-sm" />
+                  </div>
                   <div class="mt-1 flex gap-2">
                     <select v-model="editForm.checkInStatus" class="flex-1 rounded border px-2 py-1 text-sm">
                       <option value="NORMAL">ปกติ</option>
@@ -99,7 +102,10 @@
                 </div>
                 <div>
                   <label class="block text-xs text-gray-500">เวลาเช็คเอาต์</label>
-                  <input v-model="editForm.checkOutAt" type="datetime-local" class="w-full rounded border px-2 py-1 text-sm" />
+                  <div class="flex gap-2">
+                    <input v-model="editForm.checkOutDate" type="date" class="flex-1 rounded border px-2 py-1 text-sm" />
+                    <TimeInput v-model="editForm.checkOutTime" class="w-20 rounded border px-2 py-1 text-sm" />
+                  </div>
                   <select v-model="editForm.checkOutStatus" class="mt-1 w-full rounded border px-2 py-1 text-sm">
                     <option value="NORMAL">ปกติ</option>
                     <option value="OUT_OF_RANGE">นอกพื้นที่</option>
@@ -170,8 +176,11 @@ const progress = ref<number | null>(null)
 const expandedId = ref<number | null>(null)
 const editingId = ref<number | null>(null)
 const editForm = reactive({
-  checkInAt: '',
-  checkOutAt: '',
+  // Bangkok date + 24-hour time; an empty time means "no check-in/out".
+  checkInDate: '',
+  checkInTime: '',
+  checkOutDate: '',
+  checkOutTime: '',
   checkInStatus: 'NORMAL',
   checkOutStatus: 'NORMAL',
   checkInLate: false,
@@ -209,15 +218,6 @@ function downloadExport() {
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
 }
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-}
-function toLocalInput(iso: string | null) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
 
 function monthRange() {
   const start = new Date(year.value, month.value - 1, 1)
@@ -248,8 +248,11 @@ async function load() {
 
 function startEdit(record: any) {
   editingId.value = record.id
-  editForm.checkInAt = toLocalInput(record.checkInAt)
-  editForm.checkOutAt = toLocalInput(record.checkOutAt)
+  const day = bangkokDate(record.date)
+  editForm.checkInDate = record.checkInAt ? bangkokDate(record.checkInAt) : day
+  editForm.checkInTime = record.checkInAt ? formatTime(record.checkInAt) : ''
+  editForm.checkOutDate = record.checkOutAt ? bangkokDate(record.checkOutAt) : day
+  editForm.checkOutTime = record.checkOutAt ? formatTime(record.checkOutAt) : ''
   editForm.checkInStatus = record.checkInStatus || 'NORMAL'
   editForm.checkOutStatus = record.checkOutStatus || 'NORMAL'
   editForm.checkInLate = !!record.checkInLate
@@ -262,8 +265,8 @@ async function saveEdit(id: number) {
       await request(`/api/attendance/${id}`, {
         method: 'PUT',
         body: {
-          checkInAt: editForm.checkInAt ? new Date(editForm.checkInAt).toISOString() : null,
-          checkOutAt: editForm.checkOutAt ? new Date(editForm.checkOutAt).toISOString() : null,
+          checkInAt: editForm.checkInTime ? bangkokToISO(editForm.checkInDate, editForm.checkInTime) : null,
+          checkOutAt: editForm.checkOutTime ? bangkokToISO(editForm.checkOutDate, editForm.checkOutTime) : null,
           checkInStatus: editForm.checkInStatus,
           checkOutStatus: editForm.checkOutStatus,
           checkInLate: editForm.checkInLate,

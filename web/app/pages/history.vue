@@ -97,9 +97,6 @@ const pendingVisitIds = computed(
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
 }
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })
-}
 function statusLabel(status: string) {
   return { NORMAL: 'ปกติ', OUT_OF_RANGE: 'นอกพื้นที่', OFF_SITE: 'งานนอกสถานที่' }[status] || status
 }

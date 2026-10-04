@@ -54,11 +54,11 @@
             <div class="grid grid-cols-2 gap-2">
               <div>
                 <label class="mb-1 block text-xs text-gray-500">เวลาเข้างาน</label>
-                <input v-model="form.shift.startTime" type="time" class="w-full rounded-lg border px-3 py-2 text-sm" />
+                <TimeInput v-model="form.shift.startTime" class="w-full rounded-lg border px-3 py-2 text-sm" />
               </div>
               <div>
                 <label class="mb-1 block text-xs text-gray-500">เวลาเลิกงาน</label>
-                <input v-model="form.shift.endTime" type="time" class="w-full rounded-lg border px-3 py-2 text-sm" />
+                <TimeInput v-model="form.shift.endTime" class="w-full rounded-lg border px-3 py-2 text-sm" />
               </div>
             </div>
             <label class="mt-2 block text-xs text-gray-500">ผ่อนผันสาย (นาที)</label>

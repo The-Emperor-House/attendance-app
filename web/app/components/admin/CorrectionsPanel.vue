@@ -30,14 +30,14 @@
           <div v-if="c.type === 'FIX_VISIT' && c.attendance">
             <p class="text-gray-500">ที่บันทึกไว้</p>
             <p>
-              {{ c.attendance.checkInAt ? formatTime(c.attendance.checkInAt) : '-' }} –
-              {{ c.attendance.checkOutAt ? formatTime(c.attendance.checkOutAt) : 'ไม่ได้เช็คเอาต์' }}
+              {{ c.attendance.checkInAt ? formatDateTime(c.attendance.checkInAt) : '-' }} –
+              {{ c.attendance.checkOutAt ? formatDateTime(c.attendance.checkOutAt) : 'ไม่ได้เช็คเอาต์' }}
             </p>
           </div>
           <div>
             <p class="text-gray-500">ขอเป็น</p>
             <p class="font-medium text-gray-900">
-              {{ c.checkInAt ? formatTime(c.checkInAt) : 'คงเดิม' }} – {{ c.checkOutAt ? formatTime(c.checkOutAt) : 'คงเดิม' }}
+              {{ c.checkInAt ? formatDateTime(c.checkInAt) : 'คงเดิม' }} – {{ c.checkOutAt ? formatDateTime(c.checkOutAt) : 'คงเดิม' }}
             </p>
           </div>
         </div>
@@ -77,15 +77,6 @@ function statusClass(status: string) {
 // Dates are calendar days stored as UTC midnight; times are shown in Bangkok time.
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
-}
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleString('th-TH', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Asia/Bangkok',
-  })
 }
 
 async function load() {

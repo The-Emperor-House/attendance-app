@@ -11,8 +11,8 @@
         <div v-if="visit" class="rounded-lg bg-gray-50 p-3 text-sm">
           <p class="font-medium text-gray-900">{{ visit.site.name }}</p>
           <p class="text-xs text-gray-500">
-            {{ formatDate(visit.date) }} · บันทึกไว้ {{ visit.checkInAt ? bangkokHHMM(visit.checkInAt) : '-' }} –
-            {{ visit.checkOutAt ? bangkokHHMM(visit.checkOutAt) : 'ยังไม่เช็คเอาต์' }}
+            {{ formatDate(visit.date) }} · บันทึกไว้ {{ visit.checkInAt ? formatTime(visit.checkInAt) : '-' }} –
+            {{ visit.checkOutAt ? formatTime(visit.checkOutAt) : 'ยังไม่เช็คเอาต์' }}
           </p>
         </div>
 
@@ -33,11 +33,11 @@
         <div class="grid grid-cols-2 gap-2">
           <div>
             <label class="mb-1 block text-xs text-gray-500">เวลาเช็คอิน{{ visit ? ' (ถ้าจะแก้)' : '' }}</label>
-            <input v-model="form.checkInTime" type="time" :required="!visit" class="w-full rounded-lg border px-3 py-2 text-sm" />
+            <TimeInput v-model="form.checkInTime" :required="!visit" class="w-full rounded-lg border px-3 py-2 text-sm" />
           </div>
           <div>
             <label class="mb-1 block text-xs text-gray-500">เวลาเช็คเอาต์{{ visit ? ' (ถ้าจะแก้)' : '' }}</label>
-            <input v-model="form.checkOutTime" type="time" :required="!visit" class="w-full rounded-lg border px-3 py-2 text-sm" />
+            <TimeInput v-model="form.checkOutTime" :required="!visit" class="w-full rounded-lg border px-3 py-2 text-sm" />
           </div>
         </div>
         <p class="text-xs text-gray-500">ถ้าเวลาเช็คเอาต์น้อยกว่าเวลาเช็คอิน ระบบจะถือว่าเป็นวันถัดไป (กะข้ามคืน)</p>
@@ -74,14 +74,6 @@ const { run, showError } = useFeedback()
 // Must match MAX_DAYS_BACK in server/src/routes/corrections.js.
 const MAX_DAYS_BACK = 30
 
-function bangkokDate(d: Date) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(d)
-}
-function bangkokHHMM(iso: string) {
-  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false }).format(
-    new Date(iso)
-  )
-}
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' })
 }

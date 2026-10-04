@@ -1,5 +1,6 @@
 <template>
   <div class="flex min-h-[80vh] flex-col justify-center">
+    <img src="/favicon.svg" alt="" class="mx-auto mb-3 h-14 w-14" />
     <h1 class="mb-6 text-center text-2xl font-bold text-gray-900">เข้าสู่ระบบ</h1>
     <form class="space-y-4 rounded-xl border bg-white p-6 shadow-sm" @submit.prevent="submit">
       <div>

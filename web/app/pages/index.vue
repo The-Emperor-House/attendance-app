@@ -174,9 +174,6 @@ watch(nextAction, () => {
   isOffSite.value = false
 })
 
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-}
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {
   const R = 6371000

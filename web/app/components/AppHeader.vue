@@ -1,7 +1,10 @@
 <template>
   <header class="sticky top-0 z-20 border-b border-brand-100 bg-white/90 backdrop-blur">
     <div class="mx-auto flex max-w-md items-center justify-between px-4 py-3">
-      <p class="text-base font-semibold tracking-tight text-brand-800">เช็คอิน<span class="text-brand-500">.</span></p>
+      <NuxtLink to="/" class="flex items-center gap-2">
+        <img src="/favicon.svg" alt="" class="h-7 w-7" />
+        <span class="text-base font-semibold tracking-tight text-brand-800">เช็คอิน<span class="text-brand-500">.</span></span>
+      </NuxtLink>
 
       <div class="flex items-center gap-3">
         <NuxtLink
