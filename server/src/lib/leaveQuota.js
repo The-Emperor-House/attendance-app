@@ -1,8 +1,19 @@
 import { prisma } from "./prisma.js";
+import { DEFAULT_WORK_DAYS, yearRange } from "./leaveDays.js";
 
-function daysInclusive(start, end) {
-  const ms = end.getTime() - start.getTime();
-  return Math.round(ms / 86400000) + 1;
+export { countLeaveDays, yearRange } from "./leaveDays.js";
+
+// Work days and public holidays needed to turn a date range into chargeable leave days.
+export async function loadLeaveCalendar(employeeId, from, to) {
+  const [shift, holidays] = await Promise.all([
+    prisma.shift.findUnique({ where: { employeeId }, select: { workDays: true } }),
+    prisma.holiday.findMany({ where: { date: { gte: from, lte: to } }, select: { date: true } }),
+  ]);
+  const workDays = Array.isArray(shift?.workDays) && shift.workDays.length ? shift.workDays : DEFAULT_WORK_DAYS;
+  return {
+    workDays: new Set(workDays),
+    holidays: new Set(holidays.map((h) => h.date.getTime())),
+  };
 }
 
 // Quota for one employee/type/year: an explicit LeaveQuota override wins,
@@ -18,39 +29,38 @@ export async function getQuotaDays(employeeId, type, year) {
 }
 
 // Days already requested (PENDING or APPROVED — REJECTED frees the quota back up)
-// for this employee/type within the given calendar year.
-export async function getUsedDays(employeeId, type, year) {
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const yearEnd = new Date(Date.UTC(year, 11, 31));
+// for this employee/type, counting only the part of each request inside `year`.
+export async function getUsedDays(employeeId, type, year, calendar) {
+  const { from, to } = yearRange(year);
+  const cal = calendar ?? (await loadLeaveCalendar(employeeId, from, to));
 
   const requests = await prisma.leaveRequest.findMany({
     where: {
       employeeId,
       type,
       status: { in: ["PENDING", "APPROVED"] },
-      startDate: { lte: yearEnd },
-      endDate: { gte: yearStart },
+      startDate: { lte: to },
+      endDate: { gte: from },
     },
   });
 
-  return requests.reduce((sum, r) => sum + daysInclusive(r.startDate, r.endDate), 0);
+  return requests.reduce((sum, r) => sum + countLeaveDays(r.startDate, r.endDate, cal, from, to), 0);
 }
 
 export async function getQuotaSummary(employeeId, year) {
-  const categories = await prisma.leaveCategory.findMany({
-    where: { active: true },
-    orderBy: { createdAt: "asc" },
-  });
+  const { from, to } = yearRange(year);
+  const [categories, calendar] = await Promise.all([
+    prisma.leaveCategory.findMany({ where: { active: true }, orderBy: { createdAt: "asc" } }),
+    loadLeaveCalendar(employeeId, from, to),
+  ]);
 
   const summary = [];
   for (const { code, name } of categories) {
     const [quota, used] = await Promise.all([
       getQuotaDays(employeeId, code, year),
-      getUsedDays(employeeId, code, year),
+      getUsedDays(employeeId, code, year, calendar),
     ]);
     summary.push({ type: code, name, quota, used, remaining: Math.max(quota - used, 0) });
   }
   return summary;
 }
-
-export { daysInclusive };

@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
-import { getQuotaDays, getUsedDays, daysInclusive } from "../lib/leaveQuota.js";
+import { requireAuth, requireRole, employeeScope } from "../middleware/auth.js";
+import { getQuotaDays, getUsedDays, countLeaveDays, loadLeaveCalendar, yearRange } from "../lib/leaveQuota.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -32,17 +32,43 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด" });
   }
 
-  const requestedDays = daysInclusive(start, end);
-  const year = start.getUTCFullYear();
-  const [quota, used] = await Promise.all([
-    getQuotaDays(req.user.sub, type, year),
-    getUsedDays(req.user.sub, type, year),
-  ]);
-  const remaining = quota - used;
-  if (requestedDays > remaining) {
-    return res.status(400).json({
-      error: `โควตาไม่พอ: ขอ ${requestedDays} วัน แต่เหลือโควตา ${Math.max(remaining, 0)} วัน`,
-    });
+  const overlapping = await prisma.leaveRequest.findFirst({
+    where: {
+      employeeId: req.user.sub,
+      status: { in: ["PENDING", "APPROVED"] },
+      startDate: { lte: end },
+      endDate: { gte: start },
+    },
+  });
+  if (overlapping) {
+    return res.status(409).json({ error: "มีคำขอลาในช่วงวันที่นี้อยู่แล้ว" });
+  }
+
+  // Quota is per calendar year, so a request spanning New Year is checked against each year separately.
+  const firstYear = start.getUTCFullYear();
+  const lastYear = end.getUTCFullYear();
+  const calendar = await loadLeaveCalendar(req.user.sub, yearRange(firstYear).from, yearRange(lastYear).to);
+
+  let totalDays = 0;
+  for (let year = firstYear; year <= lastYear; year += 1) {
+    const { from, to } = yearRange(year);
+    const requestedDays = countLeaveDays(start, end, calendar, from, to);
+    if (requestedDays === 0) continue;
+    totalDays += requestedDays;
+
+    const [quota, used] = await Promise.all([
+      getQuotaDays(req.user.sub, type, year),
+      getUsedDays(req.user.sub, type, year, calendar),
+    ]);
+    const remaining = quota - used;
+    if (requestedDays > remaining) {
+      return res.status(400).json({
+        error: `โควตาปี ${year} ไม่พอ: ขอ ${requestedDays} วัน แต่เหลือโควตา ${Math.max(remaining, 0)} วัน`,
+      });
+    }
+  }
+  if (totalDays === 0) {
+    return res.status(400).json({ error: "ช่วงวันที่เลือกไม่มีวันทำงาน (เป็นวันหยุดทั้งหมด)" });
   }
 
   const leave = await prisma.leaveRequest.create({
@@ -86,11 +112,8 @@ router.get("/", requireRole("ADMIN", "SUPERVISOR"), async (req, res) => {
   }
   const status = statusParsed.data;
 
-  // Supervisors only see leave requests from employees assigned to them; admins see everyone.
-  const employeeScope = req.user.role === "SUPERVISOR" ? { supervisorId: req.user.sub } : {};
-
   const leaves = await prisma.leaveRequest.findMany({
-    where: { ...(status ? { status } : {}), employee: employeeScope },
+    where: { ...(status ? { status } : {}), employee: employeeScope(req.user) },
     orderBy: { createdAt: "desc" },
     include: { employee: { include: { department: true } }, approvedBy: true },
   });

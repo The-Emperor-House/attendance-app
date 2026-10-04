@@ -4,8 +4,9 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { uploadPhoto } from "../lib/cloudinary.js";
 import { distanceMeters } from "../lib/geo.js";
-import { isLateCheckIn, resolveShift } from "../lib/time.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { canUseSite, findOpenVisit, visitOrdinals } from "../lib/attendance.js";
+import { bangkokTodayDateOnly, isLateCheckIn, resolveShift } from "../lib/time.js";
+import { requireAuth, requireRole, employeeScope } from "../middleware/auth.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -27,12 +28,24 @@ const checkSchema = z.object({
   lat: z.coerce.number(),
   lng: z.coerce.number(),
   note: z.string().optional(),
-  isOffSite: z.coerce.boolean().optional().default(false),
+  // Multipart fields arrive as strings; z.coerce.boolean() would turn "false" into true.
+  isOffSite: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
 });
 
-function todayDateOnly() {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+// Check-out always happens at the check-in site, so siteId is optional there and,
+// if sent, must match.
+const checkOutSchema = checkSchema.extend({ siteId: z.coerce.number().int().optional() });
+
+const SITE_NOT_ASSIGNED = "คุณไม่ได้รับสิทธิ์ให้ลงเวลาที่สถานที่นี้";
+const CONCURRENT_SUBMIT = "มีการบันทึกซ้อนกัน กรุณาโหลดหน้าใหม่แล้วตรวจสอบอีกครั้ง";
+
+function siteStatus(site, lat, lng, isOffSite) {
+  const distanceM = distanceMeters(lat, lng, site.lat, site.lng);
+  const status = isOffSite ? "OFF_SITE" : distanceM <= site.radiusM ? "NORMAL" : "OUT_OF_RANGE";
+  return { distanceM, status };
 }
 
 router.post("/check-in", upload.single("photo"), async (req, res) => {
@@ -45,51 +58,66 @@ router.post("/check-in", upload.single("photo"), async (req, res) => {
   }
 
   const { siteId, lat, lng, note, isOffSite } = parsed.data;
-  const [site, employee] = await Promise.all([
+  const date = bangkokTodayDateOnly();
+  const [site, employee, openVisit, lastVisitToday] = await Promise.all([
     prisma.site.findUnique({ where: { id: siteId } }),
     prisma.employee.findUnique({ where: { id: req.user.sub }, include: { shift: true } }),
+    findOpenVisit(req.user.sub),
+    prisma.dailyAttendance.findFirst({
+      where: { employeeId: req.user.sub, date },
+      orderBy: { seq: "desc" },
+      select: { seq: true },
+    }),
   ]);
   if (!site) {
     return res.status(404).json({ error: "Site not found" });
   }
-
-  const date = todayDateOnly();
-  const existing = await prisma.dailyAttendance.findUnique({
-    where: { employeeId_date: { employeeId: req.user.sub, date } },
-  });
-
-  if (existing?.checkInAt) {
-    return res.status(409).json({ error: "วันนี้เช็คอินไปแล้ว หากผิดพลาดให้ติดต่อ HR" });
+  if (!(await canUseSite(req.user.sub, siteId))) {
+    return res.status(403).json({ error: SITE_NOT_ASSIGNED });
+  }
+  if (openVisit) {
+    return res.status(409).json({
+      error: `ยังไม่ได้เช็คเอาต์จาก ${openVisit.site.name} กรุณาเช็คเอาต์ก่อนเช็คอินที่ใหม่`,
+    });
   }
 
-  const distanceM = distanceMeters(lat, lng, site.lat, site.lng);
-  const status = isOffSite ? "OFF_SITE" : distanceM <= site.radiusM ? "NORMAL" : "OUT_OF_RANGE";
+  const seq = (lastVisitToday?.seq ?? 0) + 1;
+  const { distanceM, status } = siteStatus(site, lat, lng, isOffSite);
   const checkInAt = new Date();
+  // Lateness is about arriving for the day, so only the first visit can be late.
   const shift = resolveShift(employee);
-  const late = shift ? isLateCheckIn(checkInAt, shift.startTime, shift.graceMinutes) : false;
+  const late = seq === 1 && shift ? isLateCheckIn(checkInAt, shift.startTime, shift.graceMinutes) : false;
 
-  const data = {
-    checkInAt,
-    checkInLat: lat,
-    checkInLng: lng,
-    checkInDistanceM: distanceM,
-    checkInPhotoUrl: await uploadPhoto(req.file.buffer, employee.employeeCode, "in"),
-    checkInStatus: status,
-    checkInLate: late,
-    note,
-  };
-
-  const record = existing
-    ? await prisma.dailyAttendance.update({ where: { id: existing.id }, data: { ...data, siteId } })
-    : await prisma.dailyAttendance.create({
-        data: { employeeId: req.user.sub, siteId, date, ...data },
-      });
-
-  res.status(201).json(record);
+  try {
+    const record = await prisma.dailyAttendance.create({
+      data: {
+        employeeId: req.user.sub,
+        siteId,
+        date,
+        seq,
+        checkInAt,
+        checkInLat: lat,
+        checkInLng: lng,
+        checkInDistanceM: distanceM,
+        checkInPhotoUrl: await uploadPhoto(req.file.buffer, employee.employeeCode, "in"),
+        checkInStatus: status,
+        checkInLate: late,
+        note,
+      },
+      include: { site: true },
+    });
+    res.status(201).json(record);
+  } catch (err) {
+    // A double-submit raced past the checks above and took the same seq.
+    if (err.code === "P2002") {
+      return res.status(409).json({ error: CONCURRENT_SUBMIT });
+    }
+    throw err;
+  }
 });
 
 router.post("/check-out", upload.single("photo"), async (req, res) => {
-  const parsed = checkSchema.safeParse(req.body);
+  const parsed = checkOutSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
@@ -98,31 +126,24 @@ router.post("/check-out", upload.single("photo"), async (req, res) => {
   }
 
   const { siteId, lat, lng, note, isOffSite } = parsed.data;
-  const [site, employee] = await Promise.all([
-    prisma.site.findUnique({ where: { id: siteId } }),
+  const [openVisit, employee] = await Promise.all([
+    findOpenVisit(req.user.sub),
     prisma.employee.findUnique({ where: { id: req.user.sub }, select: { employeeCode: true } }),
   ]);
-  if (!site) {
-    return res.status(404).json({ error: "Site not found" });
+
+  if (!openVisit) {
+    return res.status(400).json({ error: "ไม่มีรายการเช็คอินที่ยังไม่ได้เช็คเอาต์" });
+  }
+  // Distance and status are measured against the visit's own site; the row stores
+  // one site, so checking out elsewhere would be reported as if it happened there.
+  const site = openVisit.site;
+  if (siteId !== undefined && siteId !== site.id) {
+    return res.status(400).json({ error: `ต้องเช็คเอาต์ที่สถานที่เดียวกับที่เช็คอิน (${site.name})` });
   }
 
-  const date = todayDateOnly();
-  const existing = await prisma.dailyAttendance.findUnique({
-    where: { employeeId_date: { employeeId: req.user.sub, date } },
-  });
-
-  if (!existing?.checkInAt) {
-    return res.status(400).json({ error: "ยังไม่ได้เช็คอินวันนี้" });
-  }
-  if (existing.checkOutAt) {
-    return res.status(409).json({ error: "วันนี้เช็คเอาต์ไปแล้ว หากผิดพลาดให้ติดต่อ HR" });
-  }
-
-  const distanceM = distanceMeters(lat, lng, site.lat, site.lng);
-  const status = isOffSite ? "OFF_SITE" : distanceM <= site.radiusM ? "NORMAL" : "OUT_OF_RANGE";
-
-  const record = await prisma.dailyAttendance.update({
-    where: { id: existing.id },
+  const { distanceM, status } = siteStatus(site, lat, lng, isOffSite);
+  const { count } = await prisma.dailyAttendance.updateMany({
+    where: { id: openVisit.id, checkOutAt: null },
     data: {
       checkOutAt: new Date(),
       checkOutLat: lat,
@@ -130,28 +151,41 @@ router.post("/check-out", upload.single("photo"), async (req, res) => {
       checkOutDistanceM: distanceM,
       checkOutPhotoUrl: await uploadPhoto(req.file.buffer, employee.employeeCode, "out"),
       checkOutStatus: status,
-      note: note ?? existing.note,
+      note: note ?? openVisit.note,
     },
   });
+  if (count === 0) {
+    return res.status(409).json({ error: CONCURRENT_SUBMIT });
+  }
 
-  res.status(201).json(record);
+  res
+    .status(201)
+    .json(await prisma.dailyAttendance.findUnique({ where: { id: openVisit.id }, include: { site: true } }));
 });
 
+// Today's visits plus the visit waiting for check-out (which may have started
+// yesterday for a shift crossing midnight).
 router.get("/today", async (req, res) => {
-  const record = await prisma.dailyAttendance.findUnique({
-    where: { employeeId_date: { employeeId: req.user.sub, date: todayDateOnly() } },
-  });
-  res.json(record);
+  const [visits, openVisit] = await Promise.all([
+    prisma.dailyAttendance.findMany({
+      where: { employeeId: req.user.sub, date: bangkokTodayDateOnly() },
+      orderBy: { checkInAt: "asc" },
+      include: { site: true },
+    }),
+    findOpenVisit(req.user.sub),
+  ]);
+  res.json({ visits: visits.map((v, i) => ({ ...v, visitNo: i + 1 })), openVisit });
 });
 
 router.get("/me", async (req, res) => {
   const records = await prisma.dailyAttendance.findMany({
     where: { employeeId: req.user.sub },
-    orderBy: { date: "desc" },
+    orderBy: [{ date: "desc" }, { checkInAt: "desc" }],
     include: { site: true },
     take: 100,
   });
-  res.json(records);
+  const ordinals = visitOrdinals(records);
+  res.json(records.map((r) => ({ ...r, visitNo: ordinals.get(r.id) })));
 });
 
 const statusFilterSchema = z.enum(["NORMAL", "OUT_OF_RANGE", "OFF_SITE"]).optional();
@@ -165,23 +199,37 @@ router.get("/", requireRole("ADMIN", "SUPERVISOR"), async (req, res) => {
   }
   const status = statusParsed.data;
 
+  const baseWhere = {
+    siteId: siteId ? Number(siteId) : undefined,
+    employeeId: employeeId ? Number(employeeId) : undefined,
+    date: {
+      gte: from ? new Date(from) : undefined,
+      lte: to ? new Date(to) : undefined,
+    },
+    employee: employeeScope(req.user),
+  };
+
   const records = await prisma.dailyAttendance.findMany({
     where: {
-      siteId: siteId ? Number(siteId) : undefined,
-      employeeId: employeeId ? Number(employeeId) : undefined,
-      date: {
-        gte: from ? new Date(from) : undefined,
-        lte: to ? new Date(to) : undefined,
-      },
-      ...(status
-        ? { OR: [{ checkInStatus: status }, { checkOutStatus: status }] }
-        : {}),
+      ...baseWhere,
+      ...(status ? { OR: [{ checkInStatus: status }, { checkOutStatus: status }] } : {}),
     },
-    orderBy: { date: "desc" },
+    orderBy: [{ date: "desc" }, { employeeId: "asc" }, { checkInAt: "asc" }],
     include: { employee: true, site: true },
     take: 10000,
   });
-  res.json(records);
+
+  // With a status filter some visits of a day are missing, so number visits against
+  // the unfiltered set (ids and times only) to keep "visit N" correct.
+  const ordinals = visitOrdinals(
+    status
+      ? await prisma.dailyAttendance.findMany({
+          where: baseWhere,
+          select: { id: true, employeeId: true, date: true, checkInAt: true },
+        })
+      : records
+  );
+  res.json(records.map((r) => ({ ...r, visitNo: ordinals.get(r.id) })));
 });
 
 const editSchema = z.object({
@@ -204,8 +252,15 @@ router.put("/:id", requireRole("ADMIN", "SUPERVISOR"), async (req, res) => {
   if (checkInAt !== undefined) data.checkInAt = checkInAt ? new Date(checkInAt) : null;
   if (checkOutAt !== undefined) data.checkOutAt = checkOutAt ? new Date(checkOutAt) : null;
 
+  const existing = await prisma.dailyAttendance.findFirst({
+    where: { id: Number(req.params.id), employee: employeeScope(req.user) },
+  });
+  if (!existing) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
   const record = await prisma.dailyAttendance.update({
-    where: { id: Number(req.params.id) },
+    where: { id: existing.id },
     data: {
       ...data,
       editedByHr: true,

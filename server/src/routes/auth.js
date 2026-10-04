@@ -2,17 +2,30 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import { rateLimit } from "express-rate-limit";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { passwordSchema } from "../lib/password.js";
 
 const router = Router();
 
-const loginSchema = z.object({
-  employeeCode: z.string().min(1),
-  password: z.string().min(6),
+// Slows down password guessing: 10 attempts per IP per 15 minutes. The counter is
+// in-memory, so on Vercel it is per function instance — a speed bump, not a lockout.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "พยายามเข้าสู่ระบบบ่อยเกินไป กรุณารอ 15 นาทีแล้วลองใหม่" },
 });
 
-router.post("/login", async (req, res) => {
+const loginSchema = z.object({
+  employeeCode: z.string().min(1),
+  // Only checked against the stored hash; the length rule applies when a password is set.
+  password: z.string().min(1),
+});
+
+router.post("/login", loginLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
@@ -61,7 +74,7 @@ router.get("/export-token", requireAuth, (req, res) => {
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(6),
+  newPassword: passwordSchema,
 });
 
 router.post("/change-password", requireAuth, async (req, res) => {
@@ -73,7 +86,7 @@ router.post("/change-password", requireAuth, async (req, res) => {
   const employee = await prisma.employee.findUnique({ where: { id: req.user.sub } });
   const valid = await bcrypt.compare(parsed.data.currentPassword, employee.passwordHash);
   if (!valid) {
-    return res.status(401).json({ error: "รหัสผ่านปัจจุบันไม่ถูกต้อง" });
+    return res.status(400).json({ error: "รหัสผ่านปัจจุบันไม่ถูกต้อง" });
   }
 
   const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10);

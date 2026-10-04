@@ -6,7 +6,6 @@
         <input v-model="name" placeholder="ชื่อแผนก เช่น ฝ่ายขาย" class="flex-1 rounded-lg border px-3 py-2 text-sm" required />
         <button class="rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white">เพิ่ม</button>
       </form>
-      <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
     </section>
 
     <section class="rounded-xl border bg-white p-4 shadow-sm">
@@ -25,7 +24,7 @@
             <span class="font-medium text-gray-900">{{ dept.name }} <span class="text-xs text-gray-400">({{ dept._count.employees }} คน)</span></span>
             <div class="flex gap-2">
               <button class="rounded-lg border px-2 py-1 text-xs" @click="startEdit(dept)">แก้ไข</button>
-              <button class="rounded-lg border px-2 py-1 text-xs text-red-600" @click="remove(dept.id)">ลบ</button>
+              <button class="rounded-lg border px-2 py-1 text-xs text-red-600" @click="remove(dept)">ลบ</button>
             </div>
           </template>
         </li>
@@ -39,20 +38,20 @@ const props = defineProps<{ departments: any[] }>()
 const emit = defineEmits<{ reload: [] }>()
 
 const { request } = useApi()
+const { run, confirm } = useFeedback()
 const name = ref('')
-const error = ref('')
 const editingId = ref<number | null>(null)
 const editName = ref('')
 
 async function createDepartment() {
-  error.value = ''
-  try {
-    await request('/api/departments', { method: 'POST', body: { name: name.value } })
-    name.value = ''
-    emit('reload')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  }
+  await run(
+    async () => {
+      await request('/api/departments', { method: 'POST', body: { name: name.value } })
+      name.value = ''
+      emit('reload')
+    },
+    { loading: 'กำลังเพิ่มแผนก...', success: 'เพิ่มแผนกแล้ว' }
+  )
 }
 
 function startEdit(dept: any) {
@@ -61,18 +60,24 @@ function startEdit(dept: any) {
 }
 
 async function saveEdit(id: number) {
-  await request(`/api/departments/${id}`, { method: 'PUT', body: { name: editName.value } })
-  editingId.value = null
-  emit('reload')
+  await run(
+    async () => {
+      await request(`/api/departments/${id}`, { method: 'PUT', body: { name: editName.value } })
+      editingId.value = null
+      emit('reload')
+    },
+    { success: 'บันทึกชื่อแผนกแล้ว' }
+  )
 }
 
-async function remove(id: number) {
-  error.value = ''
-  try {
-    await request(`/api/departments/${id}`, { method: 'DELETE' })
-    emit('reload')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'ลบไม่สำเร็จ'
-  }
+async function remove(dept: any) {
+  if (!(await confirm({ title: `ลบแผนก "${dept.name}"?`, confirmText: 'ลบ', danger: true }))) return
+  await run(
+    async () => {
+      await request(`/api/departments/${dept.id}`, { method: 'DELETE' })
+      emit('reload')
+    },
+    { loading: 'กำลังลบแผนก...', success: 'ลบแผนกแล้ว' }
+  )
 }
 </script>

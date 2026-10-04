@@ -54,7 +54,9 @@
           >
             <div class="min-w-0 flex-1">
               <p class="truncate font-medium text-gray-900">{{ record.employee.name }}</p>
-              <p class="text-xs text-gray-500">{{ formatDate(record.date) }} · {{ record.site.name }}</p>
+              <p class="text-xs text-gray-500">
+                {{ formatDate(record.date) }} · {{ record.site.name }}<span v-if="record.visitNo > 1"> · ครั้งที่ {{ record.visitNo }}</span>
+              </p>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
               <span class="text-xs text-gray-600">
@@ -147,6 +149,7 @@
 
 <script setup lang="ts">
 const { request } = useApi()
+const { run } = useFeedback()
 const { getJSON } = useProgressFetch()
 const { download } = useExportDownload()
 const config = useRuntimeConfig()
@@ -254,19 +257,26 @@ function startEdit(record: any) {
 }
 
 async function saveEdit(id: number) {
-  await request(`/api/attendance/${id}`, {
-    method: 'PUT',
-    body: {
-      checkInAt: editForm.checkInAt ? new Date(editForm.checkInAt).toISOString() : null,
-      checkOutAt: editForm.checkOutAt ? new Date(editForm.checkOutAt).toISOString() : null,
-      checkInStatus: editForm.checkInStatus,
-      checkOutStatus: editForm.checkOutStatus,
-      checkInLate: editForm.checkInLate,
-      note: editForm.note,
+  const saved = await run(
+    async () => {
+      await request(`/api/attendance/${id}`, {
+        method: 'PUT',
+        body: {
+          checkInAt: editForm.checkInAt ? new Date(editForm.checkInAt).toISOString() : null,
+          checkOutAt: editForm.checkOutAt ? new Date(editForm.checkOutAt).toISOString() : null,
+          checkInStatus: editForm.checkInStatus,
+          checkOutStatus: editForm.checkOutStatus,
+          checkInLate: editForm.checkInLate,
+          note: editForm.note,
+        },
+      })
+      editingId.value = null
     },
-  })
-  editingId.value = null
-  await load()
+    { success: 'บันทึกการแก้ไขเวลาแล้ว' }
+  )
+  // Reload outside run(): the list has its own progress bar, and a slow reload
+  // shouldn't hold the dialog open after the save itself succeeded.
+  if (saved) await load()
 }
 
 onMounted(load)

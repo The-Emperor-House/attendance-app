@@ -24,7 +24,6 @@
         </p>
         <input v-model.number="form.radiusM" type="number" placeholder="รัศมีอนุญาต (เมตร) เช่น 150" class="w-full rounded-lg border px-3 py-2 text-sm" />
 
-        <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
         <div class="flex gap-2">
           <button class="flex-1 rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white">
             {{ editingSiteId ? 'บันทึกการแก้ไข' : 'เพิ่มสถานที่' }}
@@ -46,7 +45,7 @@
             </div>
             <div class="flex shrink-0 gap-2">
               <button class="rounded-lg border px-2 py-1 text-xs" @click="editSite(site)">แก้ไข</button>
-              <button class="rounded-lg border px-2 py-1 text-xs text-red-600" @click="removeSite(site.id)">ลบ</button>
+              <button class="rounded-lg border px-2 py-1 text-xs text-red-600" @click="removeSite(site)">ลบ</button>
             </div>
           </div>
         </li>
@@ -60,10 +59,10 @@ const props = defineProps<{ sites: any[] }>()
 const emit = defineEmits<{ reload: [] }>()
 
 const { request } = useApi()
+const { run, confirm, showError } = useFeedback()
 
 const editingSiteId = ref<number | null>(null)
 const locating = ref(false)
-const error = ref('')
 
 function emptyForm() {
   return {
@@ -102,15 +101,16 @@ function useCurrentLocation() {
       form.lng = Number(pos.coords.longitude.toFixed(6))
       locating.value = false
     },
-    () => {
+    (err) => {
       locating.value = false
+      showError('ไม่สามารถขอตำแหน่งได้: ' + err.message)
     },
     { enableHighAccuracy: true, timeout: 10000 }
   )
 }
 
 async function submitSite() {
-  error.value = ''
+  const isEdit = !!editingSiteId.value
   const body = {
     name: form.name,
     address: form.address || undefined,
@@ -118,26 +118,28 @@ async function submitSite() {
     lng: form.lng,
     radiusM: form.radiusM,
   }
-  try {
-    if (editingSiteId.value) {
-      await request(`/api/sites/${editingSiteId.value}`, { method: 'PUT', body })
-    } else {
-      await request('/api/sites', { method: 'POST', body })
-    }
-    resetForm()
-    emit('reload')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  }
+  await run(
+    async () => {
+      if (isEdit) {
+        await request(`/api/sites/${editingSiteId.value}`, { method: 'PUT', body })
+      } else {
+        await request('/api/sites', { method: 'POST', body })
+      }
+      resetForm()
+      emit('reload')
+    },
+    { success: isEdit ? 'บันทึกการแก้ไขสถานที่แล้ว' : 'เพิ่มสถานที่แล้ว' }
+  )
 }
 
-async function removeSite(id: number) {
-  error.value = ''
-  try {
-    await request(`/api/sites/${id}`, { method: 'DELETE' })
-    emit('reload')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'ลบไม่สำเร็จ'
-  }
+async function removeSite(site: any) {
+  if (!(await confirm({ title: `ลบสถานที่ "${site.name}"?`, confirmText: 'ลบ', danger: true }))) return
+  await run(
+    async () => {
+      await request(`/api/sites/${site.id}`, { method: 'DELETE' })
+      emit('reload')
+    },
+    { loading: 'กำลังลบสถานที่...', success: 'ลบสถานที่แล้ว' }
+  )
 }
 </script>

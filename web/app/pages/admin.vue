@@ -34,7 +34,9 @@
 
     <AdminAttendancePanel v-else-if="activeTab === 'attendance'" />
 
-    <AdminLeavePanel v-else-if="activeTab === 'leave'" :employees="allEmployees" />
+    <AdminLeavePanel v-else-if="activeTab === 'leave'" :employees="allEmployees" :can-manage="isAdmin" />
+
+    <AdminCorrectionsPanel v-else-if="activeTab === 'corrections'" />
 
     <AdminReportsPanel v-else :departments="departments" />
   </div>
@@ -42,17 +44,29 @@
 
 <script setup lang="ts">
 const { request } = useApi()
+const auth = useAuthStore()
 
-const tabs = [
-  { key: 'sites', label: 'สถานที่' },
-  { key: 'departments', label: 'แผนก' },
-  { key: 'employees', label: 'พนักงาน' },
-  { key: 'attendance', label: 'บันทึกเวลา' },
-  { key: 'leave', label: 'ลา/วันหยุด' },
-  { key: 'reports', label: 'รายงาน' },
+// Supervisors share this page but only for their team's attendance, corrections,
+// leave approvals and reports; the other tabs call ADMIN-only APIs.
+const isAdmin = computed(() => auth.user?.role === 'ADMIN')
+
+const allTabs = [
+  { key: 'sites', label: 'สถานที่', adminOnly: true },
+  { key: 'departments', label: 'แผนก', adminOnly: true },
+  { key: 'employees', label: 'พนักงาน', adminOnly: true },
+  { key: 'attendance', label: 'บันทึกเวลา', adminOnly: false },
+  { key: 'corrections', label: 'คำขอแก้ไขเวลา', adminOnly: false },
+  { key: 'leave', label: 'ลา/วันหยุด', adminOnly: false },
+  { key: 'reports', label: 'รายงาน', adminOnly: false },
 ] as const
 
-const activeTab = ref<(typeof tabs)[number]['key']>('sites')
+const tabs = computed(() =>
+  allTabs
+    .filter((t) => isAdmin.value || !t.adminOnly)
+    .map((t) => (t.key === 'leave' && !isAdmin.value ? { ...t, label: 'อนุมัติการลา' } : t))
+)
+
+const activeTab = ref<(typeof allTabs)[number]['key']>(isAdmin.value ? 'sites' : 'attendance')
 
 const sites = ref<any[]>([])
 const departments = ref<any[]>([])
@@ -87,8 +101,9 @@ function onEmployeePage(p: number) {
 }
 
 async function loadAll() {
-  sites.value = await request('/api/sites')
   departments.value = await request('/api/departments')
+  if (!isAdmin.value) return
+  sites.value = await request('/api/sites')
   const all = await request<any>('/api/employees?pageSize=100')
   allEmployees.value = all.data
   await loadEmployees()

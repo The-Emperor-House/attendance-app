@@ -11,4 +11,8 @@ export default defineNuxtRouteMiddleware((to) => {
   if (auth.isAuthenticated && to.path === '/login') {
     return navigateTo('/')
   }
+  // The management page is for admins and supervisors only (the API enforces this too).
+  if (to.path.startsWith('/admin') && auth.user?.role !== 'ADMIN' && auth.user?.role !== 'SUPERVISOR') {
+    return navigateTo('/')
+  }
 })

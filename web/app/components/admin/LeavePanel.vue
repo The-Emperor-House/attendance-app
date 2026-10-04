@@ -34,13 +34,14 @@
       </ul>
     </section>
 
+    <!-- Leave setup is admin-only (the API rejects supervisors); supervisors only approve. -->
+    <template v-if="canManage">
     <section class="rounded-xl border bg-white p-4 shadow-sm">
       <h2 class="mb-3 font-semibold text-gray-900">หมวดหมู่การลา</h2>
       <form class="mb-3 flex gap-2" @submit.prevent="addCategory">
         <input v-model="newCategoryName" placeholder="เช่น ลาบวช, ลาคลอด" class="flex-1 rounded-lg border px-3 py-2 text-sm" required />
         <button class="rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white">เพิ่ม</button>
       </form>
-      <p v-if="categoryError" class="mb-2 text-sm text-red-600">{{ categoryError }}</p>
       <ul class="space-y-1">
         <li v-for="c in allCategories" :key="c.code" class="flex items-center justify-between rounded-lg border p-2 text-sm">
           <span :class="{ 'text-gray-400 line-through': !c.active }">{{ c.name }}</span>
@@ -103,28 +104,28 @@
         <input v-model="newHoliday.name" placeholder="ชื่อวันหยุด" class="col-span-1 rounded-lg border px-2 py-2 text-sm" required />
         <button class="col-span-1 rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white">เพิ่ม</button>
       </form>
-      <p v-if="holidayError" class="mb-2 text-sm text-red-600">{{ holidayError }}</p>
       <div v-if="!holidays.length" class="text-sm text-gray-500">ยังไม่มีวันหยุด</div>
       <ul v-else class="space-y-1">
         <li v-for="h in holidays" :key="h.id" class="flex items-center justify-between rounded-lg border p-2 text-sm">
           <span>{{ formatDate(h.date) }} — {{ h.name }}</span>
-          <button class="text-xs text-red-600" @click="removeHoliday(h.id)">ลบ</button>
+          <button class="text-xs text-red-600" @click="removeHoliday(h)">ลบ</button>
         </li>
       </ul>
     </section>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-const props = defineProps<{ employees: any[] }>()
+const props = defineProps<{ employees: any[]; canManage: boolean }>()
 
 const { request } = useApi()
+const { run, confirm } = useFeedback()
 
 const leaves = ref<any[]>([])
 const statusFilter = ref('PENDING')
 
 const holidays = ref<any[]>([])
-const holidayError = ref('')
 const newHoliday = reactive({ date: '', name: '' })
 
 const defaults = ref<{ type: string; name?: string; annualDays: number }[]>([])
@@ -135,7 +136,6 @@ const currentYear = new Date().getFullYear()
 const allCategories = ref<{ code: string; name: string; active: boolean }[]>([])
 const categoryMap = computed(() => Object.fromEntries(allCategories.value.map((c) => [c.code, c.name])))
 const newCategoryName = ref('')
-const categoryError = ref('')
 
 function typeLabel(type: string) {
   return categoryMap.value[type] || type
@@ -162,8 +162,17 @@ async function loadLeaves() {
 }
 
 async function decide(id: number, decision: 'APPROVED' | 'REJECTED') {
-  await request(`/api/leaves/${id}/decide`, { method: 'POST', body: { decision } })
-  await loadLeaves()
+  await run(
+    async (step) => {
+      await request(`/api/leaves/${id}/decide`, { method: 'POST', body: { decision } })
+      step('กำลังโหลดรายการใหม่...')
+      await loadLeaves()
+    },
+    {
+      loading: decision === 'APPROVED' ? 'กำลังอนุมัติ...' : 'กำลังบันทึกไม่อนุมัติ...',
+      success: decision === 'APPROVED' ? 'อนุมัติคำขอลาแล้ว' : 'บันทึกไม่อนุมัติแล้ว',
+    }
+  )
 }
 
 async function loadHolidays() {
@@ -171,27 +180,36 @@ async function loadHolidays() {
 }
 
 async function addHoliday() {
-  holidayError.value = ''
-  try {
-    await request('/api/holidays', { method: 'POST', body: newHoliday })
-    Object.assign(newHoliday, { date: '', name: '' })
-    await loadHolidays()
-  } catch (e: any) {
-    holidayError.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  }
+  await run(
+    async () => {
+      await request('/api/holidays', { method: 'POST', body: newHoliday })
+      Object.assign(newHoliday, { date: '', name: '' })
+      await loadHolidays()
+    },
+    { loading: 'กำลังเพิ่มวันหยุด...', success: 'เพิ่มวันหยุดแล้ว' }
+  )
 }
 
-async function removeHoliday(id: number) {
-  await request(`/api/holidays/${id}`, { method: 'DELETE' })
-  await loadHolidays()
+async function removeHoliday(h: any) {
+  if (!(await confirm({ title: `ลบวันหยุด "${h.name}"?`, confirmText: 'ลบ', danger: true }))) return
+  await run(
+    async () => {
+      await request(`/api/holidays/${h.id}`, { method: 'DELETE' })
+      await loadHolidays()
+    },
+    { loading: 'กำลังลบวันหยุด...', success: 'ลบวันหยุดแล้ว' }
+  )
 }
 
 async function loadDefaults() {
   defaults.value = await request('/api/leave-quota/defaults')
 }
 
-async function saveDefault(d: { type: string; annualDays: number }) {
-  await request('/api/leave-quota/defaults', { method: 'PUT', body: d })
+async function saveDefault(d: { type: string; name?: string; annualDays: number }) {
+  await run(() => request('/api/leave-quota/defaults', { method: 'PUT', body: { type: d.type, annualDays: d.annualDays } }), {
+    loading: 'กำลังบันทึกโควตามาตรฐาน...',
+    success: `บันทึกโควตา${d.name || typeLabel(d.type)}แล้ว`,
+  })
 }
 
 async function loadEmployeeQuota() {
@@ -205,10 +223,15 @@ async function loadEmployeeQuota() {
 
 async function saveEmployeeQuota(q: { type: string; quota: number }) {
   if (!selectedEmployeeId.value) return
-  await request(`/api/leave-quota/${selectedEmployeeId.value}`, {
-    method: 'PUT',
-    body: { type: q.type, year: currentYear, days: q.quota },
-  })
+  const employeeId = selectedEmployeeId.value
+  await run(
+    () =>
+      request(`/api/leave-quota/${employeeId}`, {
+        method: 'PUT',
+        body: { type: q.type, year: currentYear, days: q.quota },
+      }),
+    { loading: 'กำลังบันทึกโควตารายบุคคล...', success: `บันทึกโควตา${q.name || typeLabel(q.type)}แล้ว` }
+  )
 }
 
 async function loadCategories() {
@@ -216,22 +239,37 @@ async function loadCategories() {
 }
 
 async function addCategory() {
-  categoryError.value = ''
-  try {
-    await request('/api/leave-categories', { method: 'POST', body: { name: newCategoryName.value } })
-    newCategoryName.value = ''
-    await Promise.all([loadCategories(), loadDefaults()])
-  } catch (e: any) {
-    categoryError.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  }
+  await run(
+    async () => {
+      await request('/api/leave-categories', { method: 'POST', body: { name: newCategoryName.value } })
+      newCategoryName.value = ''
+      await Promise.all([loadCategories(), loadDefaults()])
+    },
+    { loading: 'กำลังเพิ่มหมวดการลา...', success: 'เพิ่มหมวดการลาแล้ว' }
+  )
 }
 
-async function toggleCategory(c: { code: string; active: boolean }) {
-  await request(`/api/leave-categories/${encodeURIComponent(c.code)}`, {
-    method: 'PUT',
-    body: { active: !c.active },
-  })
-  await Promise.all([loadCategories(), loadDefaults()])
+async function toggleCategory(c: { code: string; name: string; active: boolean }) {
+  if (
+    c.active &&
+    !(await confirm({
+      title: `ปิดใช้งานหมวด "${c.name}"?`,
+      message: 'พนักงานจะยื่นลาหมวดนี้ไม่ได้ แต่ประวัติเดิมยังอยู่',
+      confirmText: 'ปิดใช้งาน',
+      danger: true,
+    }))
+  )
+    return
+  await run(
+    async () => {
+      await request(`/api/leave-categories/${encodeURIComponent(c.code)}`, {
+        method: 'PUT',
+        body: { active: !c.active },
+      })
+      await Promise.all([loadCategories(), loadDefaults()])
+    },
+    { success: c.active ? 'ปิดใช้งานหมวดการลาแล้ว' : 'เปิดใช้งานหมวดการลาแล้ว' }
+  )
 }
 
 onMounted(() => {

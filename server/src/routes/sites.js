@@ -15,8 +15,18 @@ const siteSchema = z.object({
 
 router.use(requireAuth);
 
+// `?mine=1` returns only the sites the caller may check in at (see canUseSite in
+// attendance.js); without it, the full list (used by the admin screens).
 router.get("/", async (req, res) => {
-  const sites = await prisma.site.findMany({ orderBy: { name: "asc" } });
+  let where;
+  if (req.query.mine) {
+    const assigned = await prisma.employeeSite.findMany({
+      where: { employeeId: req.user.sub },
+      select: { siteId: true },
+    });
+    if (assigned.length) where = { id: { in: assigned.map((a) => a.siteId) } };
+  }
+  const sites = await prisma.site.findMany({ where, orderBy: { name: "asc" } });
   res.json(sites);
 });
 

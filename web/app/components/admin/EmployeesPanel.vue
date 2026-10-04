@@ -9,10 +9,10 @@
         <input
           v-model="form.password"
           type="password"
-          :placeholder="editingId ? 'เปลี่ยนรหัสผ่าน (เว้นว่างถ้าไม่เปลี่ยน)' : 'รหัสผ่านเริ่มต้น'"
+          :placeholder="editingId ? 'ตั้งรหัสผ่านใหม่ (เว้นว่างถ้าไม่เปลี่ยน)' : 'รหัสผ่าน (อย่างน้อย 4 ตัวอักษร)'"
           class="w-full rounded-lg border px-3 py-2 text-sm"
           :required="!editingId"
-          minlength="6"
+          minlength="4"
         />
         <div class="grid grid-cols-2 gap-2">
           <select v-model="form.role" class="w-full rounded-lg border px-3 py-2 text-sm">
@@ -73,7 +73,6 @@
           </template>
         </div>
 
-        <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
         <div class="flex gap-2">
           <button class="flex-1 rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white">
             {{ editingId ? 'บันทึกการแก้ไข' : 'เพิ่มพนักงาน' }}
@@ -129,7 +128,7 @@
             <button v-if="emp.active" type="button" class="rounded-lg border px-3 py-1 text-xs text-red-600" @click="resigningEmployee = emp">
               ให้พ้นสภาพ
             </button>
-            <button v-else type="button" class="rounded-lg border px-3 py-1 text-xs text-brand-700" @click="reactivate(emp.id)">
+            <button v-else type="button" class="rounded-lg border px-3 py-1 text-xs text-brand-700" @click="reactivate(emp)">
               คืนสถานะ
             </button>
           </div>
@@ -166,7 +165,7 @@ const props = defineProps<{
 const emit = defineEmits<{ reload: []; search: [{ search: string; departmentId: string | number }]; page: [number] }>()
 
 const { request } = useApi()
-const error = ref('')
+const { run, confirm } = useFeedback()
 const search = ref('')
 const departmentFilter = ref<string | number>('')
 const page = computed(() => props.page)
@@ -259,7 +258,7 @@ function startEdit(emp: any) {
 }
 
 async function submitEmployee() {
-  error.value = ''
+  const isEdit = !!editingId.value
   const body: any = {
     employeeCode: form.employeeCode,
     name: form.name,
@@ -272,26 +271,32 @@ async function submitEmployee() {
   }
   if (form.password) body.password = form.password
 
-  try {
-    if (editingId.value) {
-      await request(`/api/employees/${editingId.value}`, { method: 'PUT', body })
-    } else {
-      if (!form.password) {
-        error.value = 'กรุณากำหนดรหัสผ่านเริ่มต้น'
-        return
+  await run(
+    async () => {
+      if (isEdit) {
+        await request(`/api/employees/${editingId.value}`, { method: 'PUT', body })
+      } else {
+        await request('/api/employees', { method: 'POST', body })
       }
-      await request('/api/employees', { method: 'POST', body })
+      resetForm()
+      emit('reload')
+    },
+    {
+      loading: isEdit ? 'กำลังบันทึกข้อมูลพนักงาน...' : 'กำลังเพิ่มพนักงาน...',
+      success: isEdit ? 'บันทึกข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานแล้ว',
     }
-    resetForm()
-    emit('reload')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  }
+  )
 }
 
-async function reactivate(id: number) {
-  await request(`/api/employees/${id}/reactivate`, { method: 'POST' })
-  emit('reload')
+async function reactivate(emp: any) {
+  if (!(await confirm({ title: `เปิดใช้งาน ${emp.name} อีกครั้ง?`, message: 'พนักงานจะกลับมาเข้าสู่ระบบได้', confirmText: 'เปิดใช้งาน' }))) return
+  await run(
+    async () => {
+      await request(`/api/employees/${emp.id}/reactivate`, { method: 'POST' })
+      emit('reload')
+    },
+    { success: 'เปิดใช้งานพนักงานแล้ว' }
+  )
 }
 
 function onResignDone() {

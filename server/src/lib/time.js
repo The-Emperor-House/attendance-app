@@ -39,6 +39,18 @@ export function formatDateISO(date) {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+// Today's calendar date as observed in Asia/Bangkok, as a UTC-midnight Date
+// (the shape stored in @db.Date columns). Using the UTC date instead would roll
+// check-ins between 00:00 and 06:59 Bangkok time back to the previous day.
+export function bangkokTodayDateOnly(now = new Date()) {
+  return new Date(`${formatDateISO(now)}T00:00:00.000Z`);
+}
+
+// Current calendar year in Asia/Bangkok (the server itself may run in UTC).
+export function bangkokYear(now = new Date()) {
+  return Number(formatDateISO(now).slice(0, 4));
+}
+
 // Combine a UTC-midnight calendar date with an "HH:mm" Bangkok wall-clock time
 // (plus an optional minute offset) into the corresponding UTC Date instant.
 export function bangkokWallClockToDate(dateOnly, hhmm, offsetMinutes = 0) {
@@ -46,6 +58,18 @@ export function bangkokWallClockToDate(dateOnly, hhmm, offsetMinutes = 0) {
   return new Date(
     Date.UTC(dateOnly.getUTCFullYear(), dateOnly.getUTCMonth(), dateOnly.getUTCDate(), h - 7, m + offsetMinutes)
   );
+}
+
+// Bangkok "HH:mm" check-in/out times on a UTC-midnight `dateOnly` -> instants. A missing
+// time falls back to the given instant. A check-out at or before the check-in time is
+// taken to be the next day (a shift crossing midnight).
+export function wallClockInterval(dateOnly, checkInTime, checkOutTime, fallbackIn = null, fallbackOut = null) {
+  const checkInAt = checkInTime ? bangkokWallClockToDate(dateOnly, checkInTime) : fallbackIn;
+  let checkOutAt = checkOutTime ? bangkokWallClockToDate(dateOnly, checkOutTime) : fallbackOut;
+  if (checkOutTime && checkInAt && checkOutAt <= checkInAt) {
+    checkOutAt = new Date(checkOutAt.getTime() + 86400000);
+  }
+  return { checkInAt, checkOutAt };
 }
 
 export function isLateCheckIn(checkInAt, shiftStart, graceMinutes = 0) {

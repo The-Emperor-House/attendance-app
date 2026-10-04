@@ -6,6 +6,7 @@
       <NuxtPage />
     </main>
     <BottomNav v-if="auth.isAuthenticated" />
+    <FeedbackModal />
   </div>
 </template>
 

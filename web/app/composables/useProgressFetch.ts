@@ -2,6 +2,9 @@
 // responses (e.g. "load all months" of attendance records), which $fetch/ofetch
 // cannot expose. Falls back to indeterminate progress when Content-Length is missing.
 export function useProgressFetch() {
+  const auth = useAuthStore()
+  const router = useRouter()
+
   function getJSON<T>(url: string, token: string | null, onProgress: (percent: number | null) => void): Promise<T> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -24,6 +27,10 @@ export function useProgressFetch() {
             reject(e)
           }
         } else {
+          if (xhr.status === 401) {
+            auth.logout()
+            router.push('/login')
+          }
           reject(new Error(`Request failed: ${xhr.status}`))
         }
       }
