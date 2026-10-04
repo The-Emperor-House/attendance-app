@@ -170,7 +170,8 @@ router.put("/:id", async (req, res) => {
     }
 
     return tx.employee.findUnique({ where: { id: employeeId }, include: employeeInclude });
-  });
+    // Default 5s timeout is too tight for several round trips from Vercel to Railway.
+  }, { maxWait: 10000, timeout: 15000 });
   res.json(omitPassword(full));
 });
 

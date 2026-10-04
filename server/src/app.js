@@ -42,7 +42,15 @@ export function createApp() {
 
   app.use((err, req, res, next) => {
     console.error(err);
-    res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+    if (err.name === "MulterError") {
+      const error = err.code === "LIMIT_FILE_SIZE" ? "รูปมีขนาดใหญ่เกินไป (สูงสุด 4MB)" : "อัปโหลดรูปไม่สำเร็จ";
+      return res.status(400).json({ error });
+    }
+    const status = err.status || err.statusCode || 500;
+    // Client errors (e.g. multer's "file too large") carry a message meant for the user;
+    // anything else is internal (database, Prisma, ...) and is only logged.
+    const error = status < 500 && err.message ? err.message : "เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง";
+    res.status(status).json({ error });
   });
 
   return app;
