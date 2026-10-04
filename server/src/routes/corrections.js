@@ -193,51 +193,54 @@ const decisionSchema = z.object({
   note: z.string().optional(),
 });
 
-// Applies an approved correction to DailyAttendance. Runs inside the decision's
-// transaction, so a failure here leaves the request PENDING.
-async function applyCorrection(tx, correction, reviewerId) {
+// Interactive transactions default to a 5s timeout, which a few round trips from
+// Vercel to Railway can exceed. Keep reads outside and allow more headroom.
+const TX_OPTIONS = { maxWait: 10000, timeout: 15000 };
+
+class AlreadyDecided extends Error {}
+
+// Works out, outside any transaction, the attendance write an approval needs. Returns
+// a function that performs it in a transaction and resolves to the visit id.
+async function planApproval(correction, reviewerId) {
   const audit = { editedByHr: true, editedById: reviewerId, editedAt: new Date() };
   const noteLine = `แก้ไขตามคำขอ #${correction.id}: ${correction.reason}`;
 
   if (correction.type === "FIX_VISIT") {
-    const visit = await tx.dailyAttendance.findUnique({ where: { id: correction.attendanceId } });
-    await tx.dailyAttendance.update({
-      where: { id: visit.id },
-      data: {
-        ...(correction.checkInAt ? { checkInAt: correction.checkInAt } : {}),
-        ...(correction.checkOutAt ? { checkOutAt: correction.checkOutAt } : {}),
-        note: visit.note ? `${visit.note}\n${noteLine}` : noteLine,
-        ...audit,
-      },
-    });
-    return visit.id;
+    const visit = await prisma.dailyAttendance.findUnique({ where: { id: correction.attendanceId } });
+    const data = {
+      ...(correction.checkInAt ? { checkInAt: correction.checkInAt } : {}),
+      ...(correction.checkOutAt ? { checkOutAt: correction.checkOutAt } : {}),
+      note: visit.note ? `${visit.note}\n${noteLine}` : noteLine,
+      ...audit,
+    };
+    return async (tx) => (await tx.dailyAttendance.update({ where: { id: visit.id }, data })).id;
   }
 
-  const sameDay = await tx.dailyAttendance.findMany({
-    where: { employeeId: correction.employeeId, date: correction.date },
-    select: { seq: true, checkInAt: true },
-  });
+  const [sameDay, employee] = await Promise.all([
+    prisma.dailyAttendance.findMany({
+      where: { employeeId: correction.employeeId, date: correction.date },
+      select: { seq: true, checkInAt: true },
+    }),
+    prisma.employee.findUnique({ where: { id: correction.employeeId }, include: { shift: true } }),
+  ]);
   const seq = Math.max(0, ...sameDay.map((v) => v.seq)) + 1;
   // Only the day's first arrival can be late, same as a live check-in.
   const isFirstOfDay = sameDay.every((v) => !v.checkInAt || v.checkInAt > correction.checkInAt);
-  const employee = await tx.employee.findUnique({ where: { id: correction.employeeId }, include: { shift: true } });
   const shift = resolveShift(employee);
   const late = isFirstOfDay && shift ? isLateCheckIn(correction.checkInAt, shift.startTime, shift.graceMinutes) : false;
 
-  const visit = await tx.dailyAttendance.create({
-    data: {
-      employeeId: correction.employeeId,
-      siteId: correction.siteId,
-      date: correction.date,
-      seq,
-      checkInAt: correction.checkInAt,
-      checkOutAt: correction.checkOutAt,
-      checkInLate: late,
-      note: noteLine,
-      ...audit,
-    },
-  });
-  return visit.id;
+  const data = {
+    employeeId: correction.employeeId,
+    siteId: correction.siteId,
+    date: correction.date,
+    seq,
+    checkInAt: correction.checkInAt,
+    checkOutAt: correction.checkOutAt,
+    checkInLate: late,
+    note: noteLine,
+    ...audit,
+  };
+  return async (tx) => (await tx.dailyAttendance.create({ data })).id;
 }
 
 router.post("/:id/decide", requireRole("ADMIN", "SUPERVISOR"), async (req, res) => {
@@ -262,37 +265,43 @@ router.post("/:id/decide", requireRole("ADMIN", "SUPERVISOR"), async (req, res) 
     if (overlapError) return res.status(409).json({ error: `อนุมัติไม่ได้: ${overlapError}` });
   }
 
-  try {
-    const updated = await prisma.$transaction(async (tx) => {
-      // Conditional on PENDING so two reviewers deciding at once can't both apply it.
-      const { count } = await tx.attendanceCorrection.updateMany({
-        where: { id, status: "PENDING" },
-        data: {
-          status: parsed.data.decision,
-          reviewedById: req.user.sub,
-          reviewedAt: new Date(),
-          reviewerNote: parsed.data.note,
-        },
-      });
-      if (count === 0) return null;
+  const decision = parsed.data.decision;
+  const review = {
+    status: decision,
+    reviewedById: req.user.sub,
+    reviewedAt: new Date(),
+    reviewerNote: parsed.data.note,
+  };
 
-      if (parsed.data.decision === "APPROVED") {
-        const attendanceId = await applyCorrection(tx, correction, req.user.sub);
-        await tx.attendanceCorrection.update({ where: { id }, data: { attendanceId } });
-      }
-      return tx.attendanceCorrection.findUnique({ where: { id }, include: correctionInclude });
-    });
-    if (!updated) {
+  try {
+    if (decision === "REJECTED") {
+      // Conditional on PENDING so two reviewers deciding at once can't both act.
+      const { count } = await prisma.attendanceCorrection.updateMany({ where: { id, status: "PENDING" }, data: review });
+      if (count === 0) throw new AlreadyDecided();
+    } else {
+      const writeAttendance = await planApproval(correction, req.user.sub);
+      await prisma.$transaction(async (tx) => {
+        const attendanceId = await writeAttendance(tx);
+        const { count } = await tx.attendanceCorrection.updateMany({
+          where: { id, status: "PENDING" },
+          data: { ...review, attendanceId },
+        });
+        // Someone else decided it meanwhile: throwing rolls the attendance write back.
+        if (count === 0) throw new AlreadyDecided();
+      }, TX_OPTIONS);
+    }
+  } catch (err) {
+    if (err instanceof AlreadyDecided) {
       return res.status(409).json({ error: "คำขอนี้ถูกดำเนินการไปแล้ว" });
     }
-    res.json(updated);
-  } catch (err) {
     // The employee checked in on the same day at the same moment and took the seq.
     if (err.code === "P2002") {
       return res.status(409).json({ error: "มีการบันทึกเวลาซ้อนกัน กรุณาลองอนุมัติอีกครั้ง" });
     }
     throw err;
   }
+
+  res.json(await prisma.attendanceCorrection.findUnique({ where: { id }, include: correctionInclude }));
 });
 
 export default router;
