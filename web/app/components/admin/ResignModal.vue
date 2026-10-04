@@ -24,11 +24,8 @@
           <label class="mb-1 block text-xs text-gray-500">เหตุผล (ไม่บังคับ)</label>
           <textarea v-model="form.resignationReason" rows="2" class="w-full rounded-lg border px-3 py-2 text-sm"></textarea>
         </div>
-        <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
         <div class="flex gap-2">
-          <button class="flex-1 rounded-lg bg-red-600 py-2 text-sm font-semibold text-white" :disabled="submitting">
-            {{ submitting ? 'กำลังบันทึก...' : 'ยืนยันให้พ้นสภาพ' }}
-          </button>
+          <button class="flex-1 rounded-lg bg-red-600 py-2 text-sm font-semibold text-white">ยืนยันให้พ้นสภาพ</button>
           <button type="button" class="rounded-lg border px-4 py-2 text-sm" @click="$emit('close')">ยกเลิก</button>
         </div>
       </form>
@@ -41,8 +38,7 @@ const props = defineProps<{ employee: any }>()
 const emit = defineEmits<{ close: []; done: [] }>()
 
 const { request } = useApi()
-const error = ref('')
-const submitting = ref(false)
+const { run } = useFeedback()
 
 const form = reactive({
   effectiveDate: new Date().toISOString().slice(0, 10),
@@ -51,18 +47,15 @@ const form = reactive({
 })
 
 async function submit() {
-  error.value = ''
-  submitting.value = true
-  try {
-    await request(`/api/employees/${props.employee.id}/resign`, {
-      method: 'POST',
-      body: { ...form, resignationReason: form.resignationReason || undefined },
-    })
-    emit('done')
-  } catch (e: any) {
-    error.value = e?.data?.error || 'บันทึกไม่สำเร็จ'
-  } finally {
-    submitting.value = false
-  }
+  await run(
+    async () => {
+      await request(`/api/employees/${props.employee.id}/resign`, {
+        method: 'POST',
+        body: { ...form, resignationReason: form.resignationReason || undefined },
+      })
+      emit('done')
+    },
+    { success: `บันทึกการพ้นสภาพของ ${props.employee.name} แล้ว` }
+  )
 }
 </script>

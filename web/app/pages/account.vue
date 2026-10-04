@@ -24,10 +24,10 @@
         <input
           v-model="form.newPassword"
           type="password"
-          placeholder="รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)"
+          placeholder="รหัสผ่านใหม่ (อย่างน้อย 4 ตัวอักษร)"
           class="w-full rounded-lg border px-3 py-2 text-sm"
           required
-          minlength="6"
+          minlength="4"
         />
         <input
           v-model="form.confirmPassword"
@@ -35,13 +35,9 @@
           placeholder="ยืนยันรหัสผ่านใหม่"
           class="w-full rounded-lg border px-3 py-2 text-sm"
           required
-          minlength="6"
+          minlength="4"
         />
-        <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
-        <p v-if="success" class="text-sm text-brand-700">เปลี่ยนรหัสผ่านสำเร็จ</p>
-        <button class="w-full rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white disabled:opacity-50" :disabled="submitting">
-          {{ submitting ? 'กำลังบันทึก...' : 'เปลี่ยนรหัสผ่าน' }}
-        </button>
+        <button class="w-full rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white">เปลี่ยนรหัสผ่าน</button>
       </form>
     </div>
   </div>
@@ -50,33 +46,25 @@
 <script setup lang="ts">
 const { request } = useApi()
 const auth = useAuthStore()
+const { run, showError } = useFeedback()
 
 const form = reactive({ currentPassword: '', newPassword: '', confirmPassword: '' })
-const error = ref('')
-const success = ref(false)
-const submitting = ref(false)
 
 async function submit() {
-  error.value = ''
-  success.value = false
-
   if (form.newPassword !== form.confirmPassword) {
-    error.value = 'รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน'
+    showError('รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน')
     return
   }
 
-  submitting.value = true
-  try {
-    await request('/api/auth/change-password', {
-      method: 'POST',
-      body: { currentPassword: form.currentPassword, newPassword: form.newPassword },
-    })
-    success.value = true
-    Object.assign(form, { currentPassword: '', newPassword: '', confirmPassword: '' })
-  } catch (e: any) {
-    error.value = e?.data?.error || 'เปลี่ยนรหัสผ่านไม่สำเร็จ'
-  } finally {
-    submitting.value = false
-  }
+  await run(
+    async () => {
+      await request('/api/auth/change-password', {
+        method: 'POST',
+        body: { currentPassword: form.currentPassword, newPassword: form.newPassword },
+      })
+      Object.assign(form, { currentPassword: '', newPassword: '', confirmPassword: '' })
+    },
+    { loading: 'กำลังเปลี่ยนรหัสผ่าน...', success: 'เปลี่ยนรหัสผ่านสำเร็จ' }
+  )
 }
 </script>

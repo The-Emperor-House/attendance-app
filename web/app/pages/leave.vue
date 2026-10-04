@@ -31,7 +31,6 @@
           </div>
         </div>
         <textarea v-model="form.reason" rows="2" placeholder="เหตุผล (ไม่บังคับ)" class="w-full rounded-lg border px-3 py-2 text-sm"></textarea>
-        <p v-if="error" class="text-sm text-red-600">{{ error }}</p>
         <button class="w-full rounded-lg bg-brand-700 py-2 text-sm font-semibold text-white">ส่งคำขอ</button>
       </form>
     </div>
@@ -66,10 +65,10 @@
 
 <script setup lang="ts">
 const { request } = useApi()
+const { run, confirm } = useFeedback()
 
 const leaves = ref<any[]>([])
 const loading = ref(true)
-const error = ref('')
 
 const quota = ref<{ type: string; name: string; quota: number; used: number; remaining: number }[]>([])
 const quotaLoading = ref(true)
@@ -129,22 +128,29 @@ async function loadQuota() {
 }
 
 async function submit() {
-  error.value = ''
-  try {
-    await request('/api/leaves', {
-      method: 'POST',
-      body: { ...form, reason: form.reason || undefined },
-    })
-    Object.assign(form, { type: activeCategories.value[0]?.code || '', startDate: '', endDate: '', reason: '' })
-    await Promise.all([load(), loadQuota()])
-  } catch (e: any) {
-    error.value = e?.data?.error || 'ส่งคำขอไม่สำเร็จ'
-  }
+  await run(
+    async (step) => {
+      await request('/api/leaves', {
+        method: 'POST',
+        body: { ...form, reason: form.reason || undefined },
+      })
+      Object.assign(form, { type: activeCategories.value[0]?.code || '', startDate: '', endDate: '', reason: '' })
+      step('กำลังอัปเดตโควตาและประวัติการลา...')
+      await Promise.all([load(), loadQuota()])
+    },
+    { loading: 'กำลังส่งคำขอลา...', success: 'ส่งคำขอลาแล้ว รอหัวหน้าอนุมัติ' }
+  )
 }
 
 async function cancel(id: number) {
-  await request(`/api/leaves/${id}`, { method: 'DELETE' })
-  await Promise.all([load(), loadQuota()])
+  if (!(await confirm({ title: 'ยกเลิกคำขอลานี้?', confirmText: 'ยกเลิกคำขอ', danger: true }))) return
+  await run(
+    async () => {
+      await request(`/api/leaves/${id}`, { method: 'DELETE' })
+      await Promise.all([load(), loadQuota()])
+    },
+    { loading: 'กำลังยกเลิกคำขอลา...', success: 'ยกเลิกคำขอลาแล้ว' }
+  )
 }
 
 onMounted(() => {

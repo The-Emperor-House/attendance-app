@@ -1,18 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, employeeScope } from "../middleware/auth.js";
 import { getQuotaSummary } from "../lib/leaveQuota.js";
+import { bangkokYear } from "../lib/time.js";
 
 const router = Router();
 router.use(requireAuth);
 
-function currentYear() {
-  return new Date().getFullYear();
-}
-
 router.get("/me", async (req, res) => {
-  const year = req.query.year ? Number(req.query.year) : currentYear();
+  const year = req.query.year ? Number(req.query.year) : bangkokYear();
   const summary = await getQuotaSummary(req.user.sub, year);
   res.json({ year, summary });
 });
@@ -47,7 +44,11 @@ router.put("/defaults", requireRole("ADMIN"), async (req, res) => {
 
 router.get("/:employeeId", requireRole("ADMIN", "SUPERVISOR"), async (req, res) => {
   const employeeId = Number(req.params.employeeId);
-  const year = req.query.year ? Number(req.query.year) : currentYear();
+  const allowed = await prisma.employee.findFirst({ where: { id: employeeId, ...employeeScope(req.user) } });
+  if (!allowed) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const year = req.query.year ? Number(req.query.year) : bangkokYear();
   const summary = await getQuotaSummary(employeeId, year);
   res.json({ year, summary });
 });

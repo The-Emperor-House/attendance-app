@@ -43,8 +43,9 @@ model Site {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  employees  EmployeeSite[]
-  attendance DailyAttendance[]
+  employees   EmployeeSite[]
+  attendance  DailyAttendance[]
+  corrections AttendanceCorrection[]
 }
 
 model Department {
@@ -83,6 +84,8 @@ model Employee {
   editedAttendance DailyAttendance[] @relation("EditedBy")
   leaveRequests    LeaveRequest[]    @relation("LeaveOwner")
   leavesApproved   LeaveRequest[]    @relation("LeaveApprover")
+  corrections         AttendanceCorrection[] @relation("CorrectionOwner")
+  correctionsReviewed AttendanceCorrection[] @relation("CorrectionReviewer")
   leaveQuotas      LeaveQuota[]
 }
 
@@ -115,13 +118,16 @@ model EmployeeSite {
 }
 
 // One row per employee per calendar day: check-in and check-out are paired here.
-// Only one check-in and one check-out are allowed per day; mistakes are corrected
-// by HR/Admin editing this row directly rather than creating new rows.
+// One row per site visit: a check-in and its check-out, both at the same site.
+// An employee may visit several sites a day (seq = 1, 2, ...); each visit must be
+// checked out before the next check-in. Mistakes are corrected by HR/Admin editing
+// the row directly rather than creating new rows.
 model DailyAttendance {
   id         Int      @id @default(autoincrement())
   employeeId Int
   siteId     Int
   date       DateTime @db.Date
+  seq        Int      @default(1)
 
   checkInAt        DateTime?
   checkInLat       Float?
@@ -151,7 +157,9 @@ model DailyAttendance {
   site     Site      @relation(fields: [siteId], references: [id])
   editedBy Employee? @relation("EditedBy", fields: [editedById], references: [id])
 
-  @@unique([employeeId, date])
+  corrections AttendanceCorrection[]
+
+  @@unique([employeeId, date, seq])
   @@index([siteId, date])
 }
 
@@ -219,4 +227,46 @@ model LeaveQuota {
   employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@unique([employeeId, type, year])
+}
+
+enum CorrectionType {
+  FIX_VISIT // change the times of a visit that exists (e.g. forgot to check out)
+  ADD_VISIT // record a visit that was never checked in
+}
+
+enum CorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// An employee's request to correct their own attendance, approved by their supervisor
+// or an admin (same flow as leave requests). Approval applies it to DailyAttendance.
+model AttendanceCorrection {
+  id           Int            @id @default(autoincrement())
+  employeeId   Int
+  type         CorrectionType
+  // FIX_VISIT: the visit to change. ADD_VISIT: the visit created on approval.
+  attendanceId Int?
+  siteId       Int
+  date         DateTime       @db.Date
+  checkInAt    DateTime?
+  checkOutAt   DateTime?
+  reason       String         @db.Text
+
+  status       CorrectionStatus @default(PENDING)
+  reviewedById Int?
+  reviewedAt   DateTime?
+  reviewerNote String?          @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee   Employee         @relation("CorrectionOwner", fields: [employeeId], references: [id])
+  attendance DailyAttendance? @relation(fields: [attendanceId], references: [id])
+  site       Site             @relation(fields: [siteId], references: [id])
+  reviewedBy Employee?        @relation("CorrectionReviewer", fields: [reviewedById], references: [id])
+
+  @@index([employeeId, status])
+  @@index([status, createdAt])
 }

@@ -1,13 +1,14 @@
 import { Router } from "express";
 import ExcelJS from "exceljs";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
-import { formatTimeHHMM, formatDateISO } from "../lib/time.js";
+import { requireAuth, requireExportAuth, requireRole, employeeScope } from "../middleware/auth.js";
+import { visitOrdinals } from "../lib/attendance.js";
+import { formatTimeHHMM, formatDateISO, bangkokYear } from "../lib/time.js";
 
 const router = Router();
-router.use(requireAuth, requireRole("ADMIN", "SUPERVISOR"));
+const staffOnly = requireRole("ADMIN", "SUPERVISOR");
 
-router.get("/export", async (req, res) => {
+router.get("/export", requireExportAuth, staffOnly, async (req, res) => {
   const { siteId, from, to } = req.query;
 
   const records = await prisma.dailyAttendance.findMany({
@@ -17,10 +18,12 @@ router.get("/export", async (req, res) => {
         gte: from ? new Date(from) : undefined,
         lte: to ? new Date(to) : undefined,
       },
+      employee: employeeScope(req.user),
     },
-    orderBy: { date: "desc" },
+    orderBy: [{ date: "desc" }, { employeeId: "asc" }, { checkInAt: "asc" }],
     include: { employee: true, site: true },
   });
+  const ordinals = visitOrdinals(records);
 
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Attendance");
@@ -29,6 +32,7 @@ router.get("/export", async (req, res) => {
     { header: "Employee", key: "employee", width: 24 },
     { header: "Site", key: "site", width: 20 },
     { header: "Date", key: "date", width: 14 },
+    { header: "Visit #", key: "seq", width: 8 },
     { header: "Check-in time", key: "checkIn", width: 14 },
     { header: "Check-in status", key: "checkInStatus", width: 16 },
     { header: "Late", key: "late", width: 10 },
@@ -44,6 +48,7 @@ router.get("/export", async (req, res) => {
       employee: record.employee.name,
       site: record.site.name,
       date: formatDateISO(record.date),
+      seq: ordinals.get(record.id),
       checkIn: formatTimeHHMM(record.checkInAt),
       checkInStatus: record.checkInStatus ?? "",
       late: record.checkInLate ? "สาย" : "",
@@ -75,21 +80,31 @@ function yearRange(year) {
   return { gte: new Date(Date.UTC(year, 0, 1)), lte: new Date(Date.UTC(year, 11, 31)) };
 }
 
-async function computeLateStats({ gte, lte, departmentId }) {
-  const records = await prisma.dailyAttendance.findMany({
+async function computeLateStats({ gte, lte, departmentId, user }) {
+  const visits = await prisma.dailyAttendance.findMany({
     where: {
       date: { gte, lte },
       checkInAt: { not: null },
-      ...(departmentId ? { employee: { departmentId } } : {}),
+      employee: { ...employeeScope(user), ...(departmentId ? { departmentId } : {}) },
     },
     select: {
       date: true,
+      checkInAt: true,
       checkInLate: true,
       employee: {
         select: { id: true, employeeCode: true, name: true, departmentId: true, department: { select: { name: true } } },
       },
     },
   });
+
+  // Lateness is per working day: keep only each employee's earliest visit of the day.
+  const firstOfDay = new Map();
+  for (const v of visits) {
+    const key = `${v.employee.id}|${v.date.toISOString()}`;
+    const current = firstOfDay.get(key);
+    if (!current || v.checkInAt < current.checkInAt) firstOfDay.set(key, v);
+  }
+  const records = [...firstOfDay.values()];
 
   const byDept = new Map();
   const byEmployee = new Map();
@@ -144,14 +159,14 @@ async function computeLateStats({ gte, lte, departmentId }) {
   return { departments, employees };
 }
 
-router.get("/late-stats", async (req, res) => {
-  const year = Number(req.query.year) || new Date().getFullYear();
+router.get("/late-stats", requireAuth, staffOnly, async (req, res) => {
+  const year = Number(req.query.year) || bangkokYear();
   const month = req.query.month ? Number(req.query.month) : null;
   const departmentId = req.query.departmentId ? Number(req.query.departmentId) : null;
   const employeeLimit = Math.min(Number(req.query.employeeLimit) || 10, 100);
 
   const range = month ? monthRange(year, month) : yearRange(year);
-  const { departments, employees } = await computeLateStats({ ...range, departmentId });
+  const { departments, employees } = await computeLateStats({ ...range, departmentId, user: req.user });
 
   res.json({
     year,
@@ -162,13 +177,13 @@ router.get("/late-stats", async (req, res) => {
   });
 });
 
-router.get("/late-stats/export", async (req, res) => {
-  const year = Number(req.query.year) || new Date().getFullYear();
+router.get("/late-stats/export", requireExportAuth, staffOnly, async (req, res) => {
+  const year = Number(req.query.year) || bangkokYear();
   const month = req.query.month ? Number(req.query.month) : null;
   const departmentId = req.query.departmentId ? Number(req.query.departmentId) : null;
 
   const range = month ? monthRange(year, month) : yearRange(year);
-  const { departments, employees } = await computeLateStats({ ...range, departmentId });
+  const { departments, employees } = await computeLateStats({ ...range, departmentId, user: req.user });
 
   const workbook = new ExcelJS.Workbook();
 

@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { passwordSchema } from "../lib/password.js";
 
 const router = Router();
 router.use(requireAuth, requireRole("ADMIN"));
@@ -21,7 +22,7 @@ const employeeCreateSchema = z.object({
   employeeCode: z.string().min(1),
   name: z.string().min(1),
   email: z.string().email().optional(),
-  password: z.string().min(6),
+  password: passwordSchema,
   role: z.enum(["EMPLOYEE", "SUPERVISOR", "ADMIN"]).default("EMPLOYEE"),
   departmentId: z.number().int().nullable().optional(),
   supervisorId: z.number().int().nullable().optional(),
@@ -33,7 +34,7 @@ const employeeUpdateSchema = z.object({
   employeeCode: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   email: z.string().email().optional(),
-  password: z.string().min(6).optional(),
+  password: passwordSchema.optional(),
   role: z.enum(["EMPLOYEE", "SUPERVISOR", "ADMIN"]).optional(),
   departmentId: z.number().int().nullable().optional(),
   supervisorId: z.number().int().nullable().optional(),
@@ -144,31 +145,32 @@ router.put("/:id", async (req, res) => {
     return res.status(409).json({ error: LAST_ADMIN_ERROR });
   }
 
-  const employee = await prisma.employee.update({
-    where: { id: employeeId },
-    data,
-  });
+  // One transaction so a failure part-way (e.g. a bad siteId) can't leave the
+  // employee with their old sites deleted and no new ones created.
+  const full = await prisma.$transaction(async (tx) => {
+    await tx.employee.update({ where: { id: employeeId }, data });
 
-  if (siteIds) {
-    await prisma.employeeSite.deleteMany({ where: { employeeId } });
-    await prisma.employeeSite.createMany({
-      data: siteIds.map((siteId, i) => ({ employeeId, siteId, isDefault: i === 0 })),
-    });
-  }
-
-  if (shift !== undefined) {
-    if (shift === null) {
-      await prisma.shift.deleteMany({ where: { employeeId } });
-    } else {
-      await prisma.shift.upsert({
-        where: { employeeId },
-        update: shift,
-        create: { ...shift, employeeId },
+    if (siteIds) {
+      await tx.employeeSite.deleteMany({ where: { employeeId } });
+      await tx.employeeSite.createMany({
+        data: siteIds.map((siteId, i) => ({ employeeId, siteId, isDefault: i === 0 })),
       });
     }
-  }
 
-  const full = await prisma.employee.findUnique({ where: { id: employeeId }, include: employeeInclude });
+    if (shift !== undefined) {
+      if (shift === null) {
+        await tx.shift.deleteMany({ where: { employeeId } });
+      } else {
+        await tx.shift.upsert({
+          where: { employeeId },
+          update: shift,
+          create: { ...shift, employeeId },
+        });
+      }
+    }
+
+    return tx.employee.findUnique({ where: { id: employeeId }, include: employeeInclude });
+  });
   res.json(omitPassword(full));
 });
 

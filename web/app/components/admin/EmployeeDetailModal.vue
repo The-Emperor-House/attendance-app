@@ -54,9 +54,6 @@ const loading = ref(true)
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
 }
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-}
 
 onMounted(async () => {
   try {

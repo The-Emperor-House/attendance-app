@@ -5,26 +5,28 @@
     <div class="rounded-xl border bg-white p-4 shadow-sm">
       <p class="mb-2 text-sm font-medium text-gray-700">สถานะวันนี้</p>
       <div v-if="loadingToday" class="text-sm text-gray-500">กำลังโหลด...</div>
-      <div v-else class="space-y-1 text-sm">
-        <p>
-          เช็คอิน:
-          <span :class="today?.checkInAt ? 'font-medium text-brand-700' : 'text-gray-400'">
-            {{ today?.checkInAt ? formatTime(today.checkInAt) : 'ยังไม่เช็คอิน' }}
+      <p v-else-if="!todayVisits.length" class="text-sm text-gray-400">ยังไม่เช็คอิน</p>
+      <ul v-else class="space-y-1.5 text-sm">
+        <li v-for="v in todayVisits" :key="v.id" class="flex items-center justify-between gap-2">
+          <span class="min-w-0 truncate">{{ v.visitNo ? `${v.visitNo}. ` : '' }}{{ v.site.name }}</span>
+          <span class="shrink-0" :class="v.checkOutAt ? 'text-gray-600' : 'font-medium text-brand-700'">
+            {{ v.checkInAt ? formatTime(v.checkInAt) : '-' }} – {{ v.checkOutAt ? formatTime(v.checkOutAt) : 'ยังไม่เช็คเอาต์' }}
           </span>
-        </p>
-        <p>
-          เช็คเอาต์:
-          <span :class="today?.checkOutAt ? 'font-medium text-brand-700' : 'text-gray-400'">
-            {{ today?.checkOutAt ? formatTime(today.checkOutAt) : 'ยังไม่เช็คเอาต์' }}
-          </span>
-        </p>
-      </div>
+        </li>
+      </ul>
     </div>
 
-    <template v-if="canAct">
+    <div class="space-y-5">
       <div class="rounded-xl border bg-white p-4 shadow-sm">
         <label class="mb-1 block text-sm font-medium text-gray-700">สถานที่</label>
-        <select v-model="siteId" class="w-full rounded-lg border px-3 py-2">
+        <template v-if="nextAction === 'CHECK_OUT' && today.openVisit">
+          <p class="rounded-lg border bg-gray-50 px-3 py-2 text-gray-900">{{ today.openVisit.site.name }}</p>
+          <p class="mt-1 text-xs text-gray-500">เช็คเอาต์ได้เฉพาะสถานที่เดียวกับที่เช็คอิน</p>
+          <NuxtLink :to="`/history?fix=${today.openVisit.id}`" class="mt-2 inline-block text-xs text-brand-700 underline">
+            ลืมเช็คเอาต์และย้ายมาที่อื่นแล้ว? ส่งคำขอแก้ไขเวลา แล้วเช็คอินที่ใหม่ได้เลย
+          </NuxtLink>
+        </template>
+        <select v-else v-model="siteId" class="w-full rounded-lg border px-3 py-2">
           <option v-for="site in sites" :key="site.id" :value="site.id">{{ site.name }}</option>
         </select>
       </div>
@@ -84,15 +86,11 @@
       <button
         class="w-full rounded-lg py-3 font-semibold text-white disabled:opacity-50"
         :class="nextAction === 'CHECK_IN' ? 'bg-brand-700' : 'bg-gray-800'"
-        :disabled="!canSubmit || submitting"
+        :disabled="!canSubmit"
         @click="submitAttendance"
       >
         {{ nextAction === 'CHECK_IN' ? 'เช็คอิน' : 'เช็คเอาต์' }}
       </button>
-    </template>
-
-    <div v-else class="rounded-xl border border-brand-300 bg-brand-50 p-4 text-sm text-brand-800">
-      วันนี้เช็คอิน-เอาต์ครบแล้ว หากมีข้อผิดพลาดกรุณาติดต่อ HR เพื่อแก้ไข
     </div>
   </div>
 </template>
@@ -106,11 +104,21 @@ interface Site {
   radiusM: number
 }
 
-interface TodayRecord {
+interface Visit {
   id: number
+  seq: number
+  visitNo?: number
   siteId: number
+  site: Site
   checkInAt: string | null
   checkOutAt: string | null
+}
+
+// Visits so far today, plus the one waiting for check-out (it may have started
+// yesterday for a shift crossing midnight).
+interface TodayState {
+  visits: Visit[]
+  openVisit: Visit | null
 }
 
 const { request } = useApi()
@@ -122,7 +130,7 @@ const locationError = ref('')
 const note = ref('')
 const isOffSite = ref(false)
 
-const today = ref<TodayRecord | null>(null)
+const today = ref<TodayState>({ visits: [], openVisit: null })
 const loadingToday = ref(true)
 
 const videoEl = ref<HTMLVideoElement | null>(null)
@@ -131,15 +139,24 @@ const photoBlob = ref<Blob | null>(null)
 const photoPreview = ref<string | null>(null)
 let mediaStream: MediaStream | null = null
 
-const submitting = ref(false)
 const submitError = ref('')
+const { run, showSuccess } = useFeedback()
 
-const nextAction = computed<'CHECK_IN' | 'CHECK_OUT'>(() =>
-  today.value?.checkInAt ? 'CHECK_OUT' : 'CHECK_IN'
+const todayVisits = computed(() => {
+  const { visits, openVisit } = today.value
+  return openVisit && !visits.some((v) => v.id === openVisit.id) ? [openVisit, ...visits] : visits
+})
+
+// Each visit is checked out before the next check-in, so an open visit means check-out.
+const nextAction = computed<'CHECK_IN' | 'CHECK_OUT'>(() => (today.value.openVisit ? 'CHECK_OUT' : 'CHECK_IN'))
+
+// At check-out the site is locked to the open visit's site (which may no longer be in
+// the employee's assigned list), so take it from the visit itself.
+const selectedSite = computed(() =>
+  nextAction.value === 'CHECK_OUT' && today.value.openVisit
+    ? today.value.openVisit.site
+    : sites.value.find((s) => s.id === siteId.value) || null
 )
-const canAct = computed(() => !today.value?.checkInAt || !today.value?.checkOutAt)
-
-const selectedSite = computed(() => sites.value.find((s) => s.id === siteId.value) || null)
 
 const distance = computed(() => {
   if (!coords.value || !selectedSite.value) return null
@@ -151,15 +168,12 @@ const withinRange = computed(() => {
   return distance.value <= selectedSite.value.radiusM
 })
 
-const canSubmit = computed(() => !!coords.value && !!photoBlob.value && !!siteId.value)
+const canSubmit = computed(() => !!coords.value && !!photoBlob.value && !!selectedSite.value)
 
 watch(nextAction, () => {
   isOffSite.value = false
 })
 
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-}
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number) {
   const R = 6371000
@@ -225,8 +239,7 @@ function retakePhoto() {
 async function loadToday() {
   loadingToday.value = true
   try {
-    today.value = await request<TodayRecord | null>('/api/attendance/today')
-    if (today.value?.siteId) siteId.value = today.value.siteId
+    today.value = await request<TodayState>('/api/attendance/today')
   } finally {
     loadingToday.value = false
   }
@@ -234,28 +247,37 @@ async function loadToday() {
 
 async function submitAttendance() {
   submitError.value = ''
-  if (!coords.value || !photoBlob.value || !siteId.value) return
+  if (!coords.value || !photoBlob.value || !selectedSite.value) return
 
-  submitting.value = true
-  try {
-    const form = new FormData()
-    form.append('siteId', String(siteId.value))
-    form.append('lat', String(coords.value.lat))
-    form.append('lng', String(coords.value.lng))
-    if (note.value) form.append('note', note.value)
-    if (isOffSite.value) form.append('isOffSite', 'true')
-    form.append('photo', photoBlob.value, 'checkin.jpg')
+  const isCheckIn = nextAction.value === 'CHECK_IN'
+  const label = isCheckIn ? 'เช็คอิน' : 'เช็คเอาต์'
+  let savedAt = ''
 
-    const path = nextAction.value === 'CHECK_IN' ? '/api/attendance/check-in' : '/api/attendance/check-out'
-    today.value = await request(path, { method: 'POST', body: form })
-    retakePhoto()
-    note.value = ''
-    isOffSite.value = false
-  } catch (e: any) {
-    submitError.value = e?.data?.error || 'บันทึกไม่สำเร็จ กรุณาลองใหม่'
-  } finally {
-    submitting.value = false
-  }
+  const saved = await run(
+    async () => {
+      const form = new FormData()
+      form.append('siteId', String(selectedSite.value!.id))
+      form.append('lat', String(coords.value!.lat))
+      form.append('lng', String(coords.value!.lng))
+      if (note.value) form.append('note', note.value)
+      if (isOffSite.value) form.append('isOffSite', 'true')
+      form.append('photo', photoBlob.value!, 'checkin.jpg')
+
+      const path = isCheckIn ? '/api/attendance/check-in' : '/api/attendance/check-out'
+      // Photo upload on mobile data can be slow, so allow longer than the default timeout.
+      const record = await request<Visit>(path, { method: 'POST', body: form, timeout: 60000 })
+      savedAt = (isCheckIn ? record.checkInAt : record.checkOutAt) ?? ''
+      retakePhoto()
+      note.value = ''
+      isOffSite.value = false
+    },
+    // Success is shown below so it can include the time the server recorded.
+    { loading: `กำลังอัปโหลดรูปและบันทึก${label}...`, success: false }
+  )
+  if (!saved) return
+  showSuccess(savedAt ? `${label}สำเร็จ เวลา ${formatTime(savedAt)} น.` : `${label}สำเร็จ`)
+  // Outside run(): the save already succeeded, so a failed refresh mustn't report it as failed.
+  await loadToday()
 }
 
 onMounted(async () => {
@@ -263,7 +285,7 @@ onMounted(async () => {
   getLocation()
   await startCamera()
   try {
-    sites.value = await request<Site[]>('/api/sites')
+    sites.value = await request<Site[]>('/api/sites?mine=1')
     if (!siteId.value && sites.value.length) siteId.value = sites.value[0].id
   } catch {
     submitError.value = 'โหลดรายชื่อสถานที่ไม่สำเร็จ'
